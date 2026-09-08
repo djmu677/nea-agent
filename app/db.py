@@ -143,8 +143,7 @@ class PgStore:
                 next_retry_at=r["next_retry_at"],
                 delivered_at=r["delivered_at"],
                 abandoned_at=r["abandoned_at"],
-                organization_id=r["organization_id"],
-                organization_slug=r["organization_slug"],
+                
             )
             for r in rows
         ]
