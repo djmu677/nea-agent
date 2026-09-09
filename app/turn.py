@@ -258,7 +258,9 @@ async def run_turn(
     # --- LLM con tools ----------------------------------------------------
     runtime = ToolRuntime(ctx, conv, str(crm_conv_id), profile=profile)
     try:
-        final_text = await _tool_loop(ctx, messages, runtime)
+        final_text = await _tool_loop(
+            ctx, messages, runtime, media_enabled=bool(profile.media_assets)
+        )
     except LlmExhausted as exc:
         logger.error(
             "turno %s: LLM agotó reintentos (%s) — silencio + handoff error",
@@ -353,12 +355,19 @@ async def _fetch_context(ctx: AppContext, identity: str) -> dict[str, Any] | Non
 
 
 async def _tool_loop(
-    ctx: AppContext, messages: list[dict[str, Any]], runtime: ToolRuntime
+    ctx: AppContext,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    *,
+    media_enabled: bool = False,
 ) -> str | None:
     """Rondas de tool-calling hasta obtener texto final (o rendirse)."""
     for _ in range(MAX_TOOL_ROUNDS):
         reply = await ctx.llm.complete(
-            messages, tools=tool_schemas(ctx.agenda_enabled)
+            messages,
+            tools=tool_schemas(
+                ctx.agenda_enabled, media_enabled=media_enabled
+            ),
         )
         if not reply.tool_calls:
             return reply.content  # turno de puro texto

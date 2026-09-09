@@ -46,6 +46,7 @@ class BusinessProfile:
     greeting: str | None = None
     kb_text: str | None = None
     resources: list[dict[str, str]] = field(default_factory=list)
+    media_assets: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_knowledge(self) -> bool:
@@ -56,6 +57,7 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
     """Construye el perfil desde la respuesta del CRM, tolerante a ausencias."""
     prof = payload.get("profile") or {}
     resources_raw = payload.get("resources") or []
+    media_raw = payload.get("mediaAssets") or []
     kb_text = payload.get("kb") or None
     if isinstance(kb_text, str) and kb_text.strip() == EMPTY_KB_SENTINEL:
         kb_text = None
@@ -63,6 +65,19 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
         {"label": str(r.get("label") or r.get("url") or ""), "url": str(r.get("url") or "")}
         for r in resources_raw
         if isinstance(r, dict) and r.get("url")
+    ]
+    media_assets = [
+        {
+            "id": str(item.get("id") or ""),
+            "kind": str(item.get("kind") or ""),
+            "label": str(item.get("label") or "Recurso"),
+            "usage": str(item.get("usage") or ""),
+            "caption": str(item.get("caption") or ""),
+        }
+        for item in media_raw
+        if isinstance(item, dict)
+        and item.get("id")
+        and item.get("kind") in {"image", "video"}
     ]
     return BusinessProfile(
         agent_name=str(prof.get("name") or default_name),
@@ -72,6 +87,7 @@ def profile_from_payload(payload: dict[str, Any], default_name: str) -> Business
         greeting=prof.get("greeting") or None,
         kb_text=kb_text,
         resources=resources,
+        media_assets=media_assets,
     )
 
 

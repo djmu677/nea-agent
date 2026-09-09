@@ -94,6 +94,27 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "send_media",
+            "description": (
+                "Envía una imagen o video aprobado de la biblioteca del negocio. "
+                "Úsala solo si el recurso aparece en el contexto y su regla de "
+                "uso coincide con lo pedido por el lead. Nunca inventes un asset_id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "asset_id": {
+                        "type": "string",
+                        "description": "ID exacto de un recurso aprobado disponible",
+                    }
+                },
+                "required": ["asset_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "propose_slots",
             "description": (
                 "Consulta la disponibilidad real de la agenda del negocio. Te "
@@ -198,9 +219,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 # Herramientas que solo tienen sentido si el CRM agenda.
 AGENDA_TOOLS = frozenset({"propose_slots", "book_session", "reschedule_session"})
+MEDIA_TOOLS = frozenset({"send_media"})
 
 
-def tool_schemas(agenda_enabled: bool = True) -> list[dict[str, Any]]:
+def tool_schemas(
+    agenda_enabled: bool = True, media_enabled: bool = True
+) -> list[dict[str, Any]]:
     """El catálogo que se le ofrece al modelo en ESTE turno.
 
     Contra un CRM sin agenda no se le enseñan las herramientas de agendar: si
@@ -208,12 +232,15 @@ def tool_schemas(agenda_enabled: bool = True) -> list[dict[str, Any]]:
     un handoff limpio. Que no exista la herramienta es más claro que pedirle al
     prompt que se acuerde de no usarla.
     """
-    if agenda_enabled:
+    if agenda_enabled and media_enabled:
         return TOOL_SCHEMAS
     return [
         t
         for t in TOOL_SCHEMAS
-        if t.get("function", {}).get("name") not in AGENDA_TOOLS
+        if (
+            (agenda_enabled or t.get("function", {}).get("name") not in AGENDA_TOOLS)
+            and (media_enabled or t.get("function", {}).get("name") not in MEDIA_TOOLS)
+        )
     ]
 
 
@@ -309,6 +336,7 @@ class ToolRuntime:
         self.booked = False
         self.routed_out = False
         self.proposed = False
+        self._sent_media_ids: set[str] = set()
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -316,6 +344,8 @@ class ToolRuntime:
                 return await self._update_ficha(args)
             if name == "move_stage":
                 return await self._move_stage(args)
+            if name == "send_media":
+                return await self._send_media(args)
             if name == "propose_slots":
                 return await self._propose_slots()
             if name == "book_session":
@@ -363,6 +393,29 @@ class ToolRuntime:
             "ok": True,
             "stageMoved": bool(result.get("stageMoved")),
             "stage": ((result.get("lead") or {}).get("stageName") or stage),
+        }
+
+    async def _send_media(self, args: dict[str, Any]) -> dict[str, Any]:
+        asset_id = str(args.get("asset_id") or "").strip()
+        approved = next(
+            (
+                asset
+                for asset in self._profile.media_assets
+                if str(asset.get("id") or "") == asset_id
+            ),
+            None,
+        )
+        if approved is None:
+            return {"ok": False, "error": "media_no_aprobado"}
+        if asset_id in self._sent_media_ids:
+            return {"ok": False, "error": "media_ya_enviado"}
+        await self._ctx.crm.send_media_message(self._crm_conv_id, asset_id)
+        self._sent_media_ids.add(asset_id)
+        return {
+            "ok": True,
+            "assetId": asset_id,
+            "kind": approved.get("kind"),
+            "label": approved.get("label"),
         }
 
     async def _propose_slots(self) -> dict[str, Any]:
