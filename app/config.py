@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     tester_wa_ids: str = ""  # CSV; vacía = responde a todos (Constitución V)
     coalesce_seconds: float = 4.0
     followup_hours: float = 4.0
+    # Cierre automático por "falta de rumbo". Desactivado por defecto:
+    # en ventas, incluso una respuesta breve o tardía puede recuperar al lead.
+    # Se conserva como opción para instalaciones que prefieran el
+    # comportamiento histórico.
+    stall_enabled: bool = False
     # "Escribiendo…" casi inmediato al recibir un mensaje (antes del coalesce).
     typing_delay_seconds: float = 0.5
 

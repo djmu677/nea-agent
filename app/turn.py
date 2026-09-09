@@ -123,12 +123,22 @@ async def run_turn(
         await _run_reset(ctx, conv, identity)
         return
 
-    # --- Gate 1.5: conversación ya cerrada por no ir a ningún lado --------
-    # El agente ya se despidió amable; seguir contestando es perseguir. Se
-    # reabre sola tras el enfriamiento (un lead que vuelve al día siguiente
-    # merece respuesta) o cuando el dueño reactiva la IA desde el CRM.
+    # --- Gate 1.5: compatibilidad con el cierre histórico "sin rumbo" ------
+    # En ventas esta regla queda apagada por defecto: un lead puede contestar
+    # corto, cambiar de tema o volver minutos después y aun así debe recibir
+    # atención. Si una versión anterior ya lo había marcado, se libera en el
+    # primer mensaje y se devuelve la fase a descubrimiento.
     if conv.stalled_at is not None:
-        if utcnow() - conv.stalled_at < STALL_COOLDOWN:
+        if not settings.stall_enabled:
+            logger.info(
+                "turno %s: libero cierre histórico por falta de rumbo", identity
+            )
+            await ctx.store.update_conversation(
+                conv.id, stalled_at=None, phase="descubrimiento"
+            )
+            conv.stalled_at = None
+            conv.phase = "descubrimiento"
+        elif utcnow() - conv.stalled_at < STALL_COOLDOWN:
             logger.info(
                 "turno %s: conversación cerrada por falta de rumbo — silencio",
                 identity,
@@ -224,7 +234,11 @@ async def run_turn(
     # UNA línea cálida en este turno y después calla (gate 1.5). El conteo es
     # determinista aquí; el LLM solo pone la redacción.
     del_lead = [m.content for m in recientes if m.role == "user"]
-    cerrar_sin_rumbo = streak < 3 and sin_rumbo(del_lead, conv.phase)
+    cerrar_sin_rumbo = (
+        settings.stall_enabled
+        and streak < 3
+        and sin_rumbo(del_lead, conv.phase)
+    )
     if cerrar_sin_rumbo:
         logger.info(
             "turno %s: sin rumbo (%d mensajes del lead, racha vacía %d) — cierro",

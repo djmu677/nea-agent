@@ -6,11 +6,9 @@ El agente se despide amable UNA vez y después calla. El conteo es determinista
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
 
 import pytest
 
-from app import turn
 from app.stall import es_relleno, racha_vacia, sin_rumbo
 from app.state import utcnow
 from tests.conftest import IDENTITY, mock_crm_basics, wa_body
@@ -76,33 +74,24 @@ async def _tres_vacios(ctx, client):
         await asyncio.sleep(0.35)
 
 
-async def test_cierra_una_vez_y_despues_calla(ctx, client, respx_mock):
+async def test_por_defecto_nunca_cierra_ni_calla_por_falta_de_rumbo(
+    ctx, client, respx_mock
+):
     routes = mock_crm_basics(respx_mock)
-    conv = await ctx.store.get_or_create_conversation(IDENTITY)
     await _tres_vacios(ctx, client)
 
-    # Se despidió en el tercero (uno por mensaje: 3 respuestas).
+    # Atiende todos los mensajes, incluso una racha que el detector marcaría.
     assert routes["messages"].call_count == 3
-    marcada = (await ctx.store.get_or_create_conversation(IDENTITY)).stalled_at
-    assert marcada is not None
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    assert conv.stalled_at is None
 
-    # El alertazo de cierre viajó en el turno del cierre, no antes.
-    sistemas = [
-        m["content"]
-        for m in ctx.llm.calls[-1]["messages"]
-        if m["role"] == "system"
-    ]
-    assert any("UNA línea cálida de cierre" in s for s in sistemas)
-
-    # Y a partir de aquí, silencio: ni LLM ni envío.
-    llamadas_previas = len(ctx.llm.calls)
     await client.post("/webhook", content=wa_body(text="oye", wamid="wamid.v9"))
     await asyncio.sleep(0.35)
-    assert routes["messages"].call_count == 3
-    assert len(ctx.llm.calls) == llamadas_previas
+    assert routes["messages"].call_count == 4
+    assert len(ctx.llm.calls) == 4
 
 
-async def test_el_lead_que_vuelve_tras_el_enfriamiento_reabre(
+async def test_un_cierre_historico_se_libera_en_el_siguiente_mensaje(
     ctx, client, respx_mock
 ):
     routes = mock_crm_basics(respx_mock)
@@ -110,7 +99,8 @@ async def test_el_lead_que_vuelve_tras_el_enfriamiento_reabre(
     await ctx.store.update_conversation(
         conv.id,
         crm_conversation_id="cv_test1",
-        stalled_at=utcnow() - turn.STALL_COOLDOWN - timedelta(minutes=1),
+        stalled_at=utcnow(),
+        phase="cerrada",
     )
 
     await client.post(
@@ -119,7 +109,26 @@ async def test_el_lead_que_vuelve_tras_el_enfriamiento_reabre(
     await asyncio.sleep(0.35)
 
     assert routes["messages"].call_count == 1  # volvió a atenderlo
-    assert (await ctx.store.get_or_create_conversation(IDENTITY)).stalled_at is None
+    recuperada = await ctx.store.get_or_create_conversation(IDENTITY)
+    assert recuperada.stalled_at is None
+    assert recuperada.phase == "descubrimiento"
+
+
+async def test_el_cierre_historico_sigue_disponible_si_se_activa(
+    ctx, client, respx_mock
+):
+    ctx.settings.stall_enabled = True
+    routes = mock_crm_basics(respx_mock)
+    await _tres_vacios(ctx, client)
+
+    assert routes["messages"].call_count == 3
+    assert (await ctx.store.get_or_create_conversation(IDENTITY)).stalled_at is not None
+
+    llamadas_previas = len(ctx.llm.calls)
+    await client.post("/webhook", content=wa_body(text="oye", wamid="wamid.v9"))
+    await asyncio.sleep(0.35)
+    assert routes["messages"].call_count == 3
+    assert len(ctx.llm.calls) == llamadas_previas
 
 
 async def test_el_candado_no_pisa_el_handoff_por_hostilidad(
@@ -138,10 +147,9 @@ async def test_el_candado_no_pisa_el_handoff_por_hostilidad(
     assert (await ctx.store.get_or_create_conversation(IDENTITY)).stalled_at is None
 
 
-async def test_no_manda_escribiendo_a_una_conversacion_cerrada(
+async def test_un_cierre_historico_no_impide_mostrar_escribiendo_y_responder(
     ctx, client, respx_mock
 ):
-    """Un "escribiendo…" seguido de silencio es peor que el silencio solo."""
     routes = mock_crm_basics(respx_mock)
     conv = await ctx.store.get_or_create_conversation(IDENTITY)
     await ctx.store.update_conversation(
@@ -152,5 +160,5 @@ async def test_no_manda_escribiendo_a_una_conversacion_cerrada(
     await client.post("/webhook", content=wa_body(text="sigues ahi?", wamid="wamid.t1"))
     await asyncio.sleep(0.35)
 
-    assert routes["typing"].call_count == previos
-    assert routes["messages"].call_count == 0
+    assert routes["typing"].call_count == previos + 1
+    assert routes["messages"].call_count == 1
