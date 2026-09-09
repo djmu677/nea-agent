@@ -151,6 +151,41 @@ async def test_update_ficha_manda_lo_que_haya(runtime_y_ctx, respx_mock):
     assert body["ficha"]["campo_raro"] == "x"
 
 
+async def test_move_stage_manda_nombre_y_devuelve_movimiento(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "stageMoved": True,
+                "lead": {"id": "lead_1", "stageName": "Interesado"},
+            },
+        )
+    )
+
+    result = await runtime.execute("move_stage", {"stage": "Interesado"})
+
+    assert result == {"ok": True, "stageMoved": True, "stage": "Interesado"}
+    body = json.loads(stage_route.calls[0].request.content)
+    assert body == {"conversationId": CRM_CONV_ID, "stage": "Interesado"}
+
+
+async def test_move_stage_rechazado_no_tumba_el_turno(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(
+            409,
+            json={"error": {"code": "protected_stage", "message": "protegida"}},
+        )
+    )
+
+    result = await runtime.execute("move_stage", {"stage": "Cliente"})
+
+    assert result["ok"] is False
+    assert result["error"] == "protected_stage"
+
+
 async def test_handoff_se_difiere_al_final_del_turno(runtime_y_ctx, respx_mock):
     runtime, ctx, conv = runtime_y_ctx
     handoff_route = respx_mock.post(f"{CRM_URL}/api/bot/handoff").mock(

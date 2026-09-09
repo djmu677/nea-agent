@@ -52,6 +52,25 @@ def test_profile_from_payload_mapea_todo():
     assert prof.has_knowledge
 
 
+def test_prompt_incluye_etapas_abiertas_del_kanban():
+    prompt = build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea", instructions="Vende muebles"),
+        context={
+            "lead": {"stageName": "Nuevo"},
+            "pipelineStages": [
+                {"name": "Nuevo", "kind": "open", "position": 0},
+                {"name": "En conversación", "kind": "open", "position": 1},
+                {"name": "Interesado", "kind": "open", "position": 2},
+            ],
+        },
+        conv=Conversation(id=1, wa_identity="56900000000"),
+    )
+
+    assert "Nuevo → En conversación → Interesado" in prompt
+    assert "move_stage" in prompt
+    assert "nunca para retroceder" in prompt
+
+
 def test_profile_from_payload_tolerante_a_vacios():
     prof = profile_from_payload({}, default_name="Nea")
     assert prof.agent_name == "Nea"

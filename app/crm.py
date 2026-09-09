@@ -5,6 +5,7 @@ Endpoints:
   GET  /api/bot/context?waIdentity=...
   POST /api/bot/messages   {conversationId, text}   → 409 ai_paused|window_closed
   PUT  /api/bot/ficha      {conversationId, ficha}
+  POST /api/bot/stage      {conversationId, stage}
   POST /api/bot/handoff    {conversationId, reason}
   GET  /api/bot/availability?conversationId=&limit=&perDay=&days=
                                                     → huecos repartidos por día,
@@ -196,6 +197,22 @@ class CrmClient:
         )
         if resp.status_code != 200:
             raise CrmError(f"ficha devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def post_move_stage(
+        self, conversation_id: str, stage: str
+    ) -> dict[str, Any]:
+        """Avanza el lead a una etapa abierta del kanban por nombre."""
+        resp = await self._request(
+            "POST",
+            "/api/bot/stage",
+            json={"conversationId": conversation_id, "stage": stage},
+        )
+        if resp.status_code == 409:
+            raise CrmConflict(_conflict_code(resp), _payload(resp))
+        if resp.status_code != 200:
+            raise CrmError(f"stage devolvió {resp.status_code}")
         data: dict[str, Any] = resp.json()
         return data
 

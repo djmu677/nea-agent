@@ -56,7 +56,8 @@ Meta Cloud API ── webhook ──► Nea (este repo)
                                   (Nea jamás llama a graph.facebook.com para enviar)
 ```
 
-Herramientas del LLM: `update_ficha` (calificación), `propose_slots` /
+Herramientas del LLM: `update_ficha` (calificación), `move_stage` (avance
+seguro entre etapas abiertas del kanban), `propose_slots` /
 `book_session` (agenda), `route_out` (no califica; comparte los recursos
 alternativos del perfil), `handoff` (pausa la IA en el CRM).
 
