@@ -71,6 +71,64 @@ def test_prompt_incluye_etapas_abiertas_del_kanban():
     assert "nunca para retroceder" in prompt
 
 
+def test_prompt_incluye_reglas_configurables_y_oculta_etapas_desactivadas():
+    prompt = build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea", instructions="Vende muebles"),
+        context={
+            "lead": {"stageName": "Nuevo"},
+            "pipelineStages": [
+                {
+                    "name": "Nuevo",
+                    "kind": "open",
+                    "position": 0,
+                    "botMoveEnabled": True,
+                    "botMoveCriteria": None,
+                },
+                {
+                    "name": "Interesado",
+                    "kind": "open",
+                    "position": 1,
+                    "botMoveEnabled": True,
+                    "botMoveCriteria": "pregunta por un modelo o confirma que le gusta",
+                },
+                {
+                    "name": "Negociacion",
+                    "kind": "open",
+                    "position": 2,
+                    "botMoveEnabled": False,
+                    "botMoveCriteria": "entrega direccion",
+                },
+            ],
+        },
+        conv=Conversation(id=1, wa_identity="56900000000"),
+    )
+
+    assert 'Regla para mover a "Interesado"' in prompt
+    assert "pregunta por un modelo o confirma que le gusta" in prompt
+    assert "Negociacion" not in prompt
+
+
+def test_prompt_prohibe_move_stage_si_todas_las_etapas_estan_desactivadas():
+    prompt = build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea", instructions="Vende muebles"),
+        context={
+            "lead": {"stageName": "Nuevo"},
+            "pipelineStages": [
+                {
+                    "name": "Interesado",
+                    "kind": "open",
+                    "position": 1,
+                    "botMoveEnabled": False,
+                    "botMoveCriteria": "pregunta por un producto",
+                }
+            ],
+        },
+        conv=Conversation(id=1, wa_identity="56900000000"),
+    )
+
+    assert "desactivó todos los movimientos automáticos" in prompt
+
+
 def test_profile_from_payload_tolerante_a_vacios():
     prof = profile_from_payload({}, default_name="Nea")
     assert prof.agent_name == "Nea"

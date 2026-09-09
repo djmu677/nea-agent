@@ -74,9 +74,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "move_stage",
             "description": (
-                "Avanza el lead a una etapa ABIERTA del kanban. Usa exactamente "
-                "uno de los nombres disponibles en el contexto. Nunca la uses "
-                "para retroceder ni para declarar al lead Cliente/ganado o Perdido."
+                "Avanza el lead a una etapa ABIERTA y habilitada del kanban, "
+                "solo cuando se cumpla la regla de decisión de esa etapa en el "
+                "contexto. Usa exactamente uno de los nombres habilitados. Nunca "
+                "la uses para retroceder ni para declarar Cliente/ganado o Perdido."
             ),
             "parameters": {
                 "type": "object",
