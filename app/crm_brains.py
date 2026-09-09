@@ -41,6 +41,7 @@ RUTAS = {
     "/api/bot/context": "/api/brains/context",
     "/api/bot/messages": "/api/brains/messages",
     "/api/bot/ficha": "/api/brains/ficha",
+    "/api/bot/stage": "/api/brains/stage",
     "/api/bot/handoff": "/api/brains/handoff",
     "/api/bot/typing": "/api/brains/typing",
     "/api/bot/availability": "/api/brains/agenda/slots",

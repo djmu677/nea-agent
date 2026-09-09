@@ -1,4 +1,4 @@
-"""Herramientas del LLM: update_ficha, propose_slots, book_session, route_out, handoff.
+"""Herramientas del LLM: ficha, kanban, agenda, descarte y handoff.
 
 Solo se reserva lo que se ofreció, y **quien manda sobre eso es el CRM**:
 Vocero guarda la oferta contra la conversación y rechaza cualquier otro
@@ -66,6 +66,27 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                     "notas": {"type": "string"},
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_stage",
+            "description": (
+                "Avanza el lead a una etapa ABIERTA del kanban. Usa exactamente "
+                "uno de los nombres disponibles en el contexto. Nunca la uses "
+                "para retroceder ni para declarar al lead Cliente/ganado o Perdido."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "stage": {
+                        "type": "string",
+                        "description": "Nombre exacto de la etapa abierta de destino",
+                    }
+                },
+                "required": ["stage"],
             },
         },
     },
@@ -292,6 +313,8 @@ class ToolRuntime:
         try:
             if name == "update_ficha":
                 return await self._update_ficha(args)
+            if name == "move_stage":
+                return await self._move_stage(args)
             if name == "propose_slots":
                 return await self._propose_slots()
             if name == "book_session":
@@ -319,6 +342,27 @@ class ToolRuntime:
             return {"ok": True, "nota": "sin campos nuevos"}
         await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
         return {"ok": True}
+
+    async def _move_stage(self, args: dict[str, Any]) -> dict[str, Any]:
+        stage = str(args.get("stage") or "").strip()
+        if not stage:
+            return {"ok": False, "error": "stage_required"}
+        try:
+            result = await self._ctx.crm.post_move_stage(self._crm_conv_id, stage)
+        except CrmConflict as exc:
+            return {
+                "ok": False,
+                "error": exc.code,
+                "detalle": (
+                    "movimiento rechazado; conserva la etapa actual y continúa "
+                    "atendiendo al cliente"
+                ),
+            }
+        return {
+            "ok": True,
+            "stageMoved": bool(result.get("stageMoved")),
+            "stage": ((result.get("lead") or {}).get("stageName") or stage),
+        }
 
     async def _propose_slots(self) -> dict[str, Any]:
         # La conversación va SIEMPRE: es contra ella que el CRM registra la
