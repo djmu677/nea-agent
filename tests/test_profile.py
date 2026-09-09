@@ -39,6 +39,16 @@ PAYLOAD = {
     },
     "kb": "P: ¿Cuánto cuesta la limpieza?\nR: $800 MXN.",
     "resources": [{"label": "Guía de higiene", "url": "https://example.com/guia"}],
+    "mediaAssets": [
+        {
+            "id": "media_sofa",
+            "kind": "image",
+            "label": "Sofá Napoleón gris",
+            "usage": "Cuando pidan una foto del Napoleón",
+            "caption": "Napoleón gris",
+        },
+        {"id": "audio_no", "kind": "audio", "label": "No permitido"},
+    ],
 }
 
 
@@ -49,6 +59,15 @@ def test_profile_from_payload_mapea_todo():
     assert prof.escalation_rules and "Urgencias" in prof.escalation_rules
     assert prof.kb_text and "$800" in prof.kb_text
     assert prof.resources == [{"label": "Guía de higiene", "url": "https://example.com/guia"}]
+    assert prof.media_assets == [
+        {
+            "id": "media_sofa",
+            "kind": "image",
+            "label": "Sofá Napoleón gris",
+            "usage": "Cuando pidan una foto del Napoleón",
+            "caption": "Napoleón gris",
+        }
+    ]
     assert prof.has_knowledge
 
 
@@ -69,6 +88,29 @@ def test_prompt_incluye_etapas_abiertas_del_kanban():
     assert "Nuevo → En conversación → Interesado" in prompt
     assert "move_stage" in prompt
     assert "nunca para retroceder" in prompt
+
+
+def test_prompt_incluye_solo_multimedia_aprobada_con_regla_de_uso():
+    profile = profile_from_payload(PAYLOAD, default_name="Nea")
+    prompt = build_system_prompt(
+        profile=profile,
+        context=None,
+        conv=Conversation(id=1, wa_identity="56900000000"),
+    )
+
+    assert "MULTIMEDIA APROBADA PARA ENVIAR" in prompt
+    assert "asset_id=media_sofa" in prompt
+    assert "Cuando pidan una foto del Napoleón" in prompt
+    assert "audio_no" not in prompt
+
+
+def test_prompt_prohibe_multimedia_si_no_hay_biblioteca():
+    prompt = build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea", instructions="Vende muebles"),
+        context=None,
+        conv=Conversation(id=1, wa_identity="56900000000"),
+    )
+    assert "no hay recursos aprobados; no llames send_media" in prompt
 
 
 def test_prompt_incluye_reglas_configurables_y_oculta_etapas_desactivadas():

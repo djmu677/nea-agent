@@ -4,6 +4,7 @@ Endpoints:
   GET  /api/bot/profile                               → agent profile + KB (404 = sin perfil)
   GET  /api/bot/context?waIdentity=...
   POST /api/bot/messages   {conversationId, text}   → 409 ai_paused|window_closed
+  POST /api/bot/messages/media {conversationId, assetId} → recurso aprobado
   PUT  /api/bot/ficha      {conversationId, ficha}
   POST /api/bot/stage      {conversationId, stage}
   POST /api/bot/handoff    {conversationId, reason}
@@ -184,6 +185,23 @@ class CrmClient:
             raise CrmConflict(_conflict_code(resp))
         if resp.status_code != 200:
             raise CrmError(f"messages devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def send_media_message(
+        self, conversation_id: str, asset_id: str
+    ) -> dict[str, Any]:
+        """Envía por el CRM un asset aprobado; NEA nunca recibe el binario ni
+        credenciales de Meta."""
+        resp = await self._request(
+            "POST",
+            "/api/bot/messages/media",
+            json={"conversationId": conversation_id, "assetId": asset_id},
+        )
+        if resp.status_code == 409:
+            raise CrmConflict(_conflict_code(resp), _payload(resp))
+        if resp.status_code != 200:
+            raise CrmError(f"messages/media devolvió {resp.status_code}")
         data: dict[str, Any] = resp.json()
         return data
 

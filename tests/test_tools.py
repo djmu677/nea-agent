@@ -8,7 +8,8 @@ import httpx
 import pytest
 
 from app.state import OfferedSlot
-from app.tools import ToolRuntime
+from app.profile import BusinessProfile
+from app.tools import ToolRuntime, tool_schemas
 from tests.conftest import CRM_CONV_ID, CRM_URL, IDENTITY, make_ctx
 
 SLOT_ISO = "2026-07-20T16:00:00Z"
@@ -184,6 +185,53 @@ async def test_move_stage_rechazado_no_tumba_el_turno(runtime_y_ctx, respx_mock)
 
     assert result["ok"] is False
     assert result["error"] == "protected_stage"
+
+
+async def test_send_media_solo_usa_asset_aprobado(runtime_y_ctx, respx_mock):
+    _runtime, ctx, conv = runtime_y_ctx
+    media_route = respx_mock.post(f"{CRM_URL}/api/bot/messages/media").mock(
+        return_value=httpx.Response(200, json={"messageId": "msg_media"})
+    )
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        profile=BusinessProfile(
+            media_assets=[
+                {
+                    "id": "media_sofa",
+                    "kind": "image",
+                    "label": "Napoleón gris",
+                    "usage": "cuando pidan una foto",
+                }
+            ]
+        ),
+    )
+
+    rejected = await runtime.execute("send_media", {"asset_id": "inventado"})
+    assert rejected == {"ok": False, "error": "media_no_aprobado"}
+    assert media_route.call_count == 0
+
+    sent = await runtime.execute("send_media", {"asset_id": "media_sofa"})
+    assert sent["ok"] is True
+    assert sent["label"] == "Napoleón gris"
+    assert json.loads(media_route.calls[0].request.content) == {
+        "conversationId": CRM_CONV_ID,
+        "assetId": "media_sofa",
+    }
+
+    duplicate = await runtime.execute("send_media", {"asset_id": "media_sofa"})
+    assert duplicate == {"ok": False, "error": "media_ya_enviado"}
+    assert media_route.call_count == 1
+
+
+def test_send_media_no_se_ofrece_al_modelo_sin_biblioteca():
+    names = {
+        tool["function"]["name"]
+        for tool in tool_schemas(agenda_enabled=True, media_enabled=False)
+    }
+    assert "send_media" not in names
+    assert "move_stage" in names
 
 
 async def test_handoff_se_difiere_al_final_del_turno(runtime_y_ctx, respx_mock):
