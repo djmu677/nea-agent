@@ -1,0 +1,37 @@
+{
+  "caseId": "P01-napoleon-2026-09-09",
+  "title": "Conversación Napoleón que no avanzó en el pipeline",
+  "initialStage": "Nuevo",
+  "observedFinalStage": "Nuevo",
+  "expectedFinalStage": "Interesado",
+  "missingForPedido": [
+    "color definitivo",
+    "dirección completa de entrega",
+    "datos de contacto o receptor confirmados"
+  ],
+  "events": [
+    {"sequence": 1, "time": "21:36", "actor": "customer", "kind": "text", "text": "/reset", "observedStageAfter": "Nuevo", "expectedStageAfter": "Nuevo"},
+    {"sequence": 2, "time": "21:36", "actor": "assistant", "kind": "text", "text": "🧹 Listo: memoria reiniciada. Te trato como lead nuevo desde tu próximo mensaje. (Comando de pruebas, solo líneas autorizadas.)", "observedStageAfter": "Nuevo", "expectedStageAfter": "Nuevo"},
+    {"sequence": 3, "time": "21:36", "actor": "customer", "kind": "text", "text": "Hola", "observedStageAfter": "Nuevo", "expectedStageAfter": "Nuevo"},
+    {"sequence": 4, "time": "21:36", "actor": "assistant", "kind": "text", "text": "¡Hola, José! Soy Globo, asistente virtual de Muebles MyM 😊 Fabricamos muebles funcionales y personalizados en Santiago. ¿Qué tipo de mueble estás buscando?", "observedStageAfter": "Nuevo", "expectedStageAfter": "Nuevo"},
+    {"sequence": 5, "time": "21:37", "actor": "customer", "kind": "text", "text": "Me gustaría saber más de napoleon", "observedStageAfter": "Nuevo", "expectedStageAfter": "En conversación"},
+    {"sequence": 6, "time": "21:37", "actor": "assistant", "kind": "text", "text": "Claro, el sofá Napoleón es un modelo tradicional de tres cuerpos. Mide aproximadamente 190 cm de ancho y 70 cm de profundidad. Está disponible en felpa, lino o jacquard, y su precio base es de $165.000. Incluye dos cojines y dos puffs. ¿Te gustaría saber sobre la tela o el envío a tu comuna? 😊", "observedStageAfter": "Nuevo", "expectedStageAfter": "En conversación"},
+    {"sequence": 7, "time": "21:37", "actor": "customer", "kind": "text", "text": "Si, que tipo de tela usa?", "observedStageAfter": "Nuevo", "expectedStageAfter": "En conversación"},
+    {"sequence": 8, "time": "21:37", "actor": "assistant", "kind": "text", "text": "Nuestros sofás Napoleón están disponibles en las siguientes telas:\n\n- *Felpa* (incluida en el precio)\n- *Lino-Jacquard* (incluido en el precio)\n- *Ecocuero* (con un costo adicional de $20.000)\n\n¿Hay alguna tela que te interese? 😊", "observedStageAfter": "Nuevo", "expectedStageAfter": "En conversación"},
+    {"sequence": 9, "time": "21:38", "actor": "customer", "kind": "text", "text": "Me gusta la felpa, tienes muestras de colores?", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 10, "time": "21:38", "actor": "assistant", "kind": "text", "text": "Sí, tengo el muestrario de telas en felpa. Puedo enviarte una imagen para que veas los colores disponibles. ¿Te gustaría que te envíe eso? 😊", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 11, "time": "21:38", "actor": "customer", "kind": "text", "text": "Si, me interesa", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 12, "time": "21:38", "actor": "assistant", "kind": "media", "text": "Muestrario de colores en tela felpa", "url": "https://crm.estudiolo.co/api/media/ma_bluxxjut8x2yfx32ci2d", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 13, "time": "21:38", "actor": "assistant", "kind": "text", "text": "Aquí tienes el muestrario de colores en tela felpa 😊. ¿Cuál color te gustaría para tu sofá Napoleón?", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 14, "time": "21:39", "actor": "customer", "kind": "text", "text": "Primero quisiera saber cuánto cuesta el envío para conchalí, me interesaría mucho tener ese mueble", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 15, "time": "21:39", "actor": "assistant", "kind": "text", "text": "El despacho a Conchalí tiene un costo de $8.000. 😊 ¿Te gustaría continuar con el pedido del sofá Napoleón en felpa?", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 16, "time": "21:39", "actor": "customer", "kind": "text", "text": "Tienen página web?", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 17, "time": "21:39", "actor": "assistant", "kind": "text", "text": "Sí, puedes visitar nuestra página web en [futonglobo.cl](https://futonglobo.cl/). Ahí encontrarás más información sobre nuestros productos.\n\n¿Te gustaría que te ayudara con algo más específico sobre el sofá Napoleón? 😊", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 18, "time": "21:40", "actor": "customer", "kind": "text", "text": "Sí me gustaría que me ayudaras a hacer pedidos hay algún enlace para hacer el pedido", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 19, "time": "21:40", "actor": "assistant", "kind": "text", "text": "Claro, puedes hacer tu pedido a través de este enlace: [futonglobo.cl/envios/#envio](https://futonglobo.cl/envios/#envio).\n\nAhí encontrarás el formulario para preparar tu pedido.\n\nUn asesor se pondrá en contacto contigo para confirmar la disponibilidad y detalles. 😊 ¿Necesitas ayuda con algo más?", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 20, "time": "21:40", "actor": "customer", "kind": "text", "text": "Saber cuánto es el costo del envío para conchalí", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 21, "time": "21:40", "actor": "assistant", "kind": "text", "text": "El costo del envío a Conchalí es de $8.000. 😊 ¿Te gustaría proceder con el pedido del sofá Napoleón?", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 22, "time": "21:40", "actor": "customer", "kind": "text", "text": "Si", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"},
+    {"sequence": 23, "time": "21:40", "actor": "assistant", "kind": "text", "text": "¡Genial, José! Un asesor se pondrá en contacto contigo para confirmar los detalles de tu pedido del sofá Napoleón y el envío a Conchalí. 😊 Gracias por tu interés, ¡que tengas un excelente día!", "observedStageAfter": "Nuevo", "expectedStageAfter": "Interesado"}
+  ]
+}
