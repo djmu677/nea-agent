@@ -475,13 +475,19 @@ def test_send_media_no_se_ofrece_al_modelo_sin_biblioteca():
 
 
 async def test_handoff_se_difiere_al_final_del_turno(runtime_y_ctx, respx_mock):
-    runtime, ctx, conv = runtime_y_ctx
+    _runtime, ctx, conv = runtime_y_ctx
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        user_text="quiero hablar con una persona",
+    )
     handoff_route = respx_mock.post(f"{CRM_URL}/api/bot/handoff").mock(
         return_value=httpx.Response(200, json={})
     )
     result = await runtime.execute("handoff", {"reason": "pidió humano"})
     assert result["ok"] is True
-    assert runtime.handoff_reason == "pidió humano"
+    assert runtime.handoff_reason == "cliente"
     # la tool NO llama al CRM: turn.py lo hace después de la despedida
     assert handoff_route.call_count == 0
 

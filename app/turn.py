@@ -257,7 +257,12 @@ async def run_turn(
 
     # --- LLM con tools ----------------------------------------------------
     runtime = ToolRuntime(
-        ctx, conv, str(crm_conv_id), profile=profile, context=context
+        ctx,
+        conv,
+        str(crm_conv_id),
+        profile=profile,
+        context=context,
+        user_text=user_text,
     )
     try:
         final_text = await _tool_loop(

@@ -23,6 +23,7 @@ from app.crm import (
     CrmError,
     SlotNotOffered,
     SlotTaken,
+    canonical_handoff_reason,
 )
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
@@ -189,6 +190,31 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "book_delivery",
+            "description": (
+                "Reserva una ENTREGA en uno de los horarios previamente ofrecidos. "
+                "Úsala cuando el cliente esté cerrando un pedido físico, después "
+                "de confirmar día completo, hora, dirección y receptor."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_utc": {
+                        "type": "string",
+                        "description": "ISO 8601 UTC exacto del slot ofrecido",
+                    },
+                    "dia_confirmado": {
+                        "type": "string",
+                        "description": "Texto con el que el cliente aceptó ese día y hora",
+                    },
+                },
+                "required": ["start_utc", "dia_confirmado"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "reschedule_session",
             "description": (
                 "Mueve la cita YA agendada del lead a otro horario ofrecido. "
@@ -247,7 +273,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 
 # Herramientas que solo tienen sentido si el CRM agenda.
-AGENDA_TOOLS = frozenset({"propose_slots", "book_session", "reschedule_session"})
+AGENDA_TOOLS = frozenset(
+    {"propose_slots", "book_session", "book_delivery", "reschedule_session"}
+)
 MEDIA_TOOLS = frozenset({"send_media"})
 
 
@@ -425,12 +453,14 @@ class ToolRuntime:
         crm_conversation_id: str,
         profile: BusinessProfile | None = None,
         context: dict[str, Any] | None = None,
+        user_text: str = "",
     ) -> None:
         self._ctx = ctx
         self._conv = conv
         self._crm_conv_id = crm_conversation_id
         self._profile = profile or BusinessProfile()
         self._context = context or {}
+        self._user_text = user_text
         # Efectos observables por turn.py:
         self.handoff_reason: str | None = None  # se ejecuta DESPUÉS de la despedida
         self.booked = False
@@ -450,6 +480,8 @@ class ToolRuntime:
                 return await self._propose_slots()
             if name == "book_session":
                 return await self._book_session(args)
+            if name == "book_delivery":
+                return await self._book_session(args, kind="delivery")
             if name == "reschedule_session":
                 return await self._reschedule_session(args)
             if name == "route_out":
@@ -511,10 +543,14 @@ class ToolRuntime:
                     "atendiendo al cliente"
                 ),
             }
+        resolved_stage = ((result.get("lead") or {}).get("stageName") or stage)
+        lead = self._context.setdefault("lead", {})
+        if isinstance(lead, dict):
+            lead["stageName"] = resolved_stage
         return {
             "ok": True,
             "stageMoved": bool(result.get("stageMoved")),
-            "stage": ((result.get("lead") or {}).get("stageName") or stage),
+            "stage": resolved_stage,
         }
 
     async def _send_media(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -628,8 +664,9 @@ class ToolRuntime:
             "ok": False,
             "error": "sin_agenda",
             "detalle": (
-                "este negocio no agenda por aquí; no ofrezcas horarios ni "
-                "prometas cita — resuelve lo que puedas y haz handoff"
+                "este negocio no tiene calendario activo; no ofrezcas horarios "
+                "ni confirmes una reserva. Continúa recopilando el pedido y "
+                "guarda la fecha solicitada; esto no justifica handoff"
             ),
         }
 
@@ -669,13 +706,24 @@ class ToolRuntime:
             "slots": _slots_for_llm(fresh),
         }
 
-    async def _book_session(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def _book_session(
+        self, args: dict[str, Any], kind: str = "session"
+    ) -> dict[str, Any]:
+        if kind == "delivery" and not _is_order_stage(self._context):
+            return {
+                "ok": False,
+                "error": "order_stage_required",
+                "detalle": (
+                    "antes de reservar la entrega, solicita move_stage a Pedido "
+                    "con toda la evidencia requerida"
+                ),
+            }
         chosen, error = await self._resolve_offered(args, "book_session")
         if error is not None or chosen is None:
             return error or {"ok": False, "error": "slot_no_ofrecido"}
         try:
             result = await self._ctx.crm.create_booking(
-                self._crm_conv_id, _iso_z(chosen.start_utc)
+                self._crm_conv_id, _iso_z(chosen.start_utc), kind=kind
             )
         except SlotTaken as exc:
             # El slot se ocupó entre oferta y elección: alternativas frescas.
@@ -707,11 +755,16 @@ class ToolRuntime:
             "meeting_url": _meeting(result)[0],
             "enlace_pendiente": _meeting(result)[1],
             "instrucciones": (
-                "confirma el día COMPLETO y la hora tal cual dice label, "
-                "comparte meeting_url si viene y menciona lo que el negocio "
-                "pida para llegar preparado. Si enlace_pendiente es true, la "
-                "cita SÍ quedó: di que el enlace le llega por aquí en un "
-                "momento, no prometas uno que no tienes"
+                "confirma la ENTREGA con día completo y hora; no menciones "
+                "reunión ni enlace"
+                if kind == "delivery"
+                else (
+                    "confirma el día COMPLETO y la hora tal cual dice label, "
+                    "comparte meeting_url si viene y menciona lo que el negocio "
+                    "pida para llegar preparado. Si enlace_pendiente es true, la "
+                    "cita SÍ quedó: di que el enlace le llega por aquí en un "
+                    "momento, no prometas uno que no tienes"
+                )
             ),
         }
 
@@ -772,10 +825,75 @@ class ToolRuntime:
         return out
 
     def _handoff(self, args: dict[str, Any]) -> dict[str, Any]:
-        self.handoff_reason = str(args.get("reason") or "lead_request")
+        reason = str(args.get("reason") or "").strip()
+        canonical = canonical_handoff_reason(reason)
+        # Una intención de compra o la falta de calendario no equivalen a que
+        # el cliente haya pedido una persona. Este guardarraíl es determinista:
+        # incluso si una regla libre del perfil induce al modelo a escalar, el
+        # pase de tipo `cliente` requiere palabras explícitas del propio lead.
+        if (
+            canonical == "cliente" or _purchase_only_handoff_reason(reason)
+        ) and not _explicit_human_request(self._user_text):
+            return {
+                "ok": False,
+                "error": "handoff_not_justified",
+                "detalle": (
+                    "el cliente no pidió una persona; continúa el pedido, "
+                    "guarda los datos y solicita el siguiente faltante"
+                ),
+            }
+        self.handoff_reason = canonical
         return {
             "ok": True,
             "nota": (
                 "el pase a humano se ejecutará después de tu mensaje de despedida"
             ),
         }
+
+
+def _explicit_human_request(text: str) -> bool:
+    normalized = " ".join(text.casefold().split())
+    people = ("humano", "persona", "asesor", "vendedor", "ejecutivo", "alguien")
+    actions = ("hablar", "comunicar", "pasar", "contactar", "atender")
+    return any(person in normalized for person in people) and (
+        any(action in normalized for action in actions)
+        or any(phrase in normalized for phrase in ("quiero un", "quiero una", "con un", "con una"))
+    )
+
+
+def _purchase_only_handoff_reason(reason: str) -> bool:
+    """Detecta motivos comerciales que el modelo no puede convertir en pase.
+
+    Los motivos de la herramienta son texto libre y su normalizador histórico
+    clasifica cualquier valor desconocido como ``modelo``. Por eso la barrera
+    no puede depender únicamente del código canónico: debe reconocer también
+    las formulaciones habituales de una compra o coordinación normal.
+    """
+    normalized = " ".join(reason.casefold().split())
+    commercial_terms = (
+        "avanzar",
+        "comprar",
+        "compra",
+        "pedido",
+        "confirmar",
+        "coordinar",
+        "agenda",
+        "calendario",
+        "entrega",
+        "despacho",
+    )
+    return any(term in normalized for term in commercial_terms)
+
+
+def _is_order_stage(context: dict[str, Any]) -> bool:
+    lead_name = str((context.get("lead") or {}).get("stageName") or "").strip()
+    stages = context.get("pipelineStages") or []
+    for stage in stages if isinstance(stages, list) else []:
+        if not isinstance(stage, dict):
+            continue
+        if str(stage.get("name") or "").strip().casefold() != lead_name.casefold():
+            continue
+        key = str(stage.get("botStageKey") or "").strip().casefold()
+        if key:
+            return key == "order"
+    return lead_name.casefold() in {"pedido", "order"}

@@ -272,9 +272,15 @@ class BrainsCrmClient(CrmClient):
         return list(slots)[:limit]
 
     async def create_booking(
-        self, conversation_id: str, start_utc: str
+        self, conversation_id: str, start_utc: str, kind: str = "session"
     ) -> dict[str, Any]:
-        return await self._agendar("POST", conversation_id, start_utc, "bookings")
+        return await self._agendar(
+            "POST",
+            conversation_id,
+            start_utc,
+            "bookings",
+            kind=None if kind == "session" else kind,
+        )
 
     async def reschedule_booking(
         self, conversation_id: str, start_utc: str
@@ -282,12 +288,20 @@ class BrainsCrmClient(CrmClient):
         return await self._agendar("PATCH", conversation_id, start_utc, "reschedule")
 
     async def _agendar(
-        self, method: str, conversation_id: str, start_utc: str, que: str
+        self,
+        method: str,
+        conversation_id: str,
+        start_utc: str,
+        que: str,
+        kind: str | None = None,
     ) -> dict[str, Any]:
+        body = {"conversationId": conversation_id, "startUtc": start_utc}
+        if kind is not None:
+            body["kind"] = kind
         resp = await self._request(
             method,
             "/api/bot/bookings",
-            json={"conversationId": conversation_id, "startUtc": start_utc},
+            json=body,
         )
         if resp.status_code == 409:
             raise _booking_conflict(resp)
