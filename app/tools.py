@@ -29,6 +29,22 @@ from app.state import AppContext, Conversation, OfferedSlot
 
 logger = logging.getLogger("nea.tools")
 
+COMMERCIAL_EVIDENCE_KEYS = (
+    "commercial_question",
+    "product_identified",
+    "product_preference",
+    "explicit_interest",
+    "price_question",
+    "delivery_question",
+    "order_confirmation",
+    "quantity_confirmed",
+    "configuration_complete",
+    "delivery_commune",
+    "delivery_address",
+    "recipient_confirmed",
+)
+COMMERCIAL_EVIDENCE_SET = frozenset(COMMERCIAL_EVIDENCE_KEYS)
+
 # Cuántos huecos quedan RESERVABLES tras un propose_slots. El agente muestra 3
 # a la vez (regla del prompt), pero guardar solo 3 lo dejaba sin nada que
 # ofrecer cuando el lead pedía otro día: el catálogo reservable es más ancho
@@ -85,9 +101,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "stage": {
                         "type": "string",
                         "description": "Nombre exacto de la etapa abierta de destino",
-                    }
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "description": (
+                            "Evidencias ya demostradas por mensajes del cliente o "
+                            "por su ficha. Incluye solo claves del catálogo; nunca "
+                            "inventes una evidencia para lograr el movimiento."
+                        ),
+                        "items": {
+                            "type": "string",
+                            "enum": list(COMMERCIAL_EVIDENCE_KEYS),
+                        },
+                        "uniqueItems": True,
+                    },
                 },
-                "required": ["stage"],
+                "required": ["stage", "evidence"],
             },
         },
     },
@@ -317,6 +346,75 @@ def _slots_for_llm(slots: list[OfferedSlot]) -> list[dict[str, str]]:
     return [{"start_utc": _iso_z(s.start_utc), "label": s.label} for s in slots]
 
 
+def _validate_pipeline_request(
+    context: dict[str, Any], stage_name: str, evidence: list[str]
+) -> dict[str, Any] | None:
+    """Espejo preventivo del contrato P03; Parley sigue siendo la autoridad.
+
+    La verificación local mejora la conversación al devolver faltantes en la
+    misma ronda del modelo. No reemplaza el candado multitenant de Parley ni
+    concede el movimiento: la escritura siempre vuelve a validarse en el CRM.
+    """
+    stages = context.get("pipelineStages") or []
+    if not isinstance(stages, list) or not stages:
+        return None  # compatibilidad con Parley anterior a P03
+
+    ordered_stages = [
+        item
+        for item in stages
+        if isinstance(item, dict)
+        and str(item.get("name") or "").strip()
+    ]
+    target = next(
+        (
+            item
+            for item in ordered_stages
+            if str(item.get("name") or "").strip().casefold() == stage_name.casefold()
+        ),
+        None,
+    )
+    if target is None:
+        return {"ok": False, "error": "stage_not_available"}
+    if target.get("botMoveEnabled", True) is False:
+        return {"ok": False, "error": "stage_automation_disabled"}
+
+    current_name = str((context.get("lead") or {}).get("stageName") or "").strip()
+    current_index = next(
+        (
+            index
+            for index, item in enumerate(ordered_stages)
+            if str(item.get("name") or "").strip().casefold()
+            == current_name.casefold()
+        ),
+        -1,
+    )
+    target_index = ordered_stages.index(target)
+    if current_index >= 0 and target_index > current_index + 1:
+        return {"ok": False, "error": "stage_skip"}
+    if current_index >= 0 and target_index < current_index:
+        return {"ok": False, "error": "backward_stage"}
+
+    rule = target.get("evidenceRule")
+    if not isinstance(rule, dict):
+        return None  # Parley anterior a P03 decide con su contrato previo
+
+    all_of = [str(key) for key in rule.get("allOf") or []]
+    any_of = [str(key) for key in rule.get("anyOf") or []]
+    available = set(evidence)
+    missing = [key for key in all_of if key not in available]
+    if any_of and not available.intersection(any_of):
+        missing.extend(any_of)
+    if not missing:
+        return None
+    return {
+        "ok": False,
+        "error": "insufficient_evidence",
+        "missingEvidence": list(dict.fromkeys(missing)),
+        "blockerCodes": list(rule.get("blockerCodes") or []),
+        "detalle": "faltan datos; permanece en la etapa actual y pregunta uno por turno",
+    }
+
+
 class ToolRuntime:
     """Ejecuta las tool-calls de UN turno y acumula sus efectos."""
 
@@ -326,11 +424,13 @@ class ToolRuntime:
         conv: Conversation,
         crm_conversation_id: str,
         profile: BusinessProfile | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         self._ctx = ctx
         self._conv = conv
         self._crm_conv_id = crm_conversation_id
         self._profile = profile or BusinessProfile()
+        self._context = context or {}
         # Efectos observables por turn.py:
         self.handoff_reason: str | None = None  # se ejecuta DESPUÉS de la despedida
         self.booked = False
@@ -378,12 +478,34 @@ class ToolRuntime:
         stage = str(args.get("stage") or "").strip()
         if not stage:
             return {"ok": False, "error": "stage_required"}
+        raw_evidence = args.get("evidence")
+        if not isinstance(raw_evidence, list):
+            return {"ok": False, "error": "evidence_required"}
+        evidence = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in raw_evidence
+                if str(item).strip() in COMMERCIAL_EVIDENCE_SET
+            )
+        )
+        if len(evidence) != len(raw_evidence):
+            return {"ok": False, "error": "invalid_evidence"}
+
+        local = _validate_pipeline_request(self._context, stage, evidence)
+        if local is not None:
+            return local
         try:
-            result = await self._ctx.crm.post_move_stage(self._crm_conv_id, stage)
+            result = await self._ctx.crm.post_move_stage(
+                self._crm_conv_id, stage, evidence
+            )
         except CrmConflict as exc:
+            error = exc.payload.get("error")
+            detail = error if isinstance(error, dict) else {}
             return {
                 "ok": False,
                 "error": exc.code,
+                "missingEvidence": detail.get("missingEvidence", []),
+                "blockerCodes": detail.get("blockerCodes", []),
                 "detalle": (
                     "movimiento rechazado; conserva la etapa actual y continúa "
                     "atendiendo al cliente"

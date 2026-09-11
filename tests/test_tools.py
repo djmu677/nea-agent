@@ -165,11 +165,18 @@ async def test_move_stage_manda_nombre_y_devuelve_movimiento(runtime_y_ctx, resp
         )
     )
 
-    result = await runtime.execute("move_stage", {"stage": "Interesado"})
+    evidence = ["product_identified", "explicit_interest"]
+    result = await runtime.execute(
+        "move_stage", {"stage": "Interesado", "evidence": evidence}
+    )
 
     assert result == {"ok": True, "stageMoved": True, "stage": "Interesado"}
     body = json.loads(stage_route.calls[0].request.content)
-    assert body == {"conversationId": CRM_CONV_ID, "stage": "Interesado"}
+    assert body == {
+        "conversationId": CRM_CONV_ID,
+        "stage": "Interesado",
+        "evidence": evidence,
+    }
 
 
 async def test_move_stage_rechazado_no_tumba_el_turno(runtime_y_ctx, respx_mock):
@@ -181,10 +188,243 @@ async def test_move_stage_rechazado_no_tumba_el_turno(runtime_y_ctx, respx_mock)
         )
     )
 
-    result = await runtime.execute("move_stage", {"stage": "Cliente"})
+    result = await runtime.execute(
+        "move_stage", {"stage": "Cliente", "evidence": []}
+    )
 
     assert result["ok"] is False
     assert result["error"] == "protected_stage"
+
+
+async def test_move_stage_expone_faltantes_rechazados_por_parley(
+    runtime_y_ctx, respx_mock
+):
+    runtime, _ctx, _conv = runtime_y_ctx
+    respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": {
+                    "code": "insufficient_evidence",
+                    "missingEvidence": ["delivery_address", "recipient_confirmed"],
+                    "blockerCodes": ["missing_delivery_address", "missing_recipient"],
+                }
+            },
+        )
+    )
+
+    result = await runtime.execute(
+        "move_stage",
+        {
+            "stage": "Pedido",
+            "evidence": ["product_identified", "order_confirmation"],
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "insufficient_evidence"
+    assert result["missingEvidence"] == [
+        "delivery_address",
+        "recipient_confirmed",
+    ]
+    assert result["blockerCodes"] == [
+        "missing_delivery_address",
+        "missing_recipient",
+    ]
+
+
+def _pipeline_context(current: str = "Nuevo") -> dict:
+    return {
+        "lead": {"stageName": current},
+        "pipelineStages": [
+            {
+                "name": "Nuevo",
+                "position": 0,
+                "botMoveEnabled": True,
+                "evidenceRule": None,
+            },
+            {
+                "name": "En conversación",
+                "position": 1,
+                "botMoveEnabled": True,
+                "evidenceRule": {
+                    "allOf": [],
+                    "anyOf": ["commercial_question", "product_identified"],
+                    "blockerCodes": ["greeting_only", "generic_question_only"],
+                },
+            },
+            {
+                "name": "Interesado",
+                "position": 2,
+                "botMoveEnabled": True,
+                "evidenceRule": {
+                    "allOf": ["product_identified"],
+                    "anyOf": [
+                        "product_preference",
+                        "explicit_interest",
+                        "price_question",
+                        "delivery_question",
+                    ],
+                    "blockerCodes": ["missing_product", "missing_buying_signal"],
+                },
+            },
+            {
+                "name": "Pedido",
+                "position": 3,
+                "botMoveEnabled": True,
+                "evidenceRule": {
+                    "allOf": [
+                        "product_identified",
+                        "order_confirmation",
+                        "quantity_confirmed",
+                        "configuration_complete",
+                        "delivery_commune",
+                        "delivery_address",
+                        "recipient_confirmed",
+                    ],
+                    "anyOf": [],
+                    "blockerCodes": [
+                        "missing_product",
+                        "ambiguous_confirmation",
+                        "missing_quantity",
+                        "missing_configuration",
+                        "missing_delivery_commune",
+                        "missing_delivery_address",
+                        "missing_recipient",
+                    ],
+                },
+            },
+        ],
+    }
+
+
+async def test_napoleon_no_puede_saltar_de_nuevo_a_interesado(
+    runtime_y_ctx, respx_mock
+):
+    _runtime, ctx, conv = runtime_y_ctx
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    runtime = ToolRuntime(
+        ctx, conv, CRM_CONV_ID, context=_pipeline_context("Nuevo")
+    )
+
+    result = await runtime.execute(
+        "move_stage",
+        {
+            "stage": "Interesado",
+            "evidence": ["product_identified", "product_preference"],
+        },
+    )
+
+    assert result == {"ok": False, "error": "stage_skip"}
+    assert stage_route.call_count == 0
+
+
+async def test_napoleon_avanza_a_interesado_con_producto_y_preferencia(
+    runtime_y_ctx, respx_mock
+):
+    _runtime, ctx, conv = runtime_y_ctx
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "stageMoved": True,
+                "lead": {"stageName": "Interesado"},
+            },
+        )
+    )
+    runtime = ToolRuntime(
+        ctx, conv, CRM_CONV_ID, context=_pipeline_context("En conversación")
+    )
+
+    result = await runtime.execute(
+        "move_stage",
+        {
+            "stage": "Interesado",
+            "evidence": ["product_identified", "product_preference"],
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["stage"] == "Interesado"
+    assert json.loads(stage_route.calls[0].request.content)["evidence"] == [
+        "product_identified",
+        "product_preference",
+    ]
+
+
+async def test_pedido_incompleto_permanece_en_interesado_y_explica_faltantes(
+    runtime_y_ctx, respx_mock
+):
+    _runtime, ctx, conv = runtime_y_ctx
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    runtime = ToolRuntime(
+        ctx, conv, CRM_CONV_ID, context=_pipeline_context("Interesado")
+    )
+
+    result = await runtime.execute(
+        "move_stage",
+        {
+            "stage": "Pedido",
+            "evidence": [
+                "product_identified",
+                "order_confirmation",
+                "delivery_commune",
+            ],
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "insufficient_evidence"
+    assert result["missingEvidence"] == [
+        "quantity_confirmed",
+        "configuration_complete",
+        "delivery_address",
+        "recipient_confirmed",
+    ]
+    assert stage_route.call_count == 0
+
+
+async def test_move_stage_rechaza_evidencia_inventada_sin_llamar_al_crm(
+    runtime_y_ctx, respx_mock
+):
+    runtime, _ctx, _conv = runtime_y_ctx
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    result = await runtime.execute(
+        "move_stage", {"stage": "Interesado", "evidence": ["porque_si"]}
+    )
+
+    assert result == {"ok": False, "error": "invalid_evidence"}
+    assert stage_route.call_count == 0
+
+
+def test_move_stage_exige_evidencia_estructurada_en_el_schema():
+    move = next(
+        tool for tool in tool_schemas() if tool["function"]["name"] == "move_stage"
+    )
+    params = move["function"]["parameters"]
+
+    assert params["required"] == ["stage", "evidence"]
+    assert params["properties"]["evidence"]["items"]["enum"] == [
+        "commercial_question",
+        "product_identified",
+        "product_preference",
+        "explicit_interest",
+        "price_question",
+        "delivery_question",
+        "order_confirmation",
+        "quantity_confirmed",
+        "configuration_complete",
+        "delivery_commune",
+        "delivery_address",
+        "recipient_confirmed",
+    ]
 
 
 async def test_send_media_solo_usa_asset_aprobado(runtime_y_ctx, respx_mock):
