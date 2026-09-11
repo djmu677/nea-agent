@@ -87,7 +87,7 @@ def test_prompt_incluye_etapas_abiertas_del_kanban():
 
     assert "Nuevo → En conversación → Interesado" in prompt
     assert "move_stage" in prompt
-    assert "nunca para retroceder" in prompt
+    assert "columna inmediatamente siguiente" in prompt
 
 
 def test_prompt_incluye_solo_multimedia_aprobada_con_regla_de_uso():
@@ -147,7 +147,38 @@ def test_prompt_incluye_reglas_configurables_y_oculta_etapas_desactivadas():
 
     assert 'Regla para mover a "Interesado"' in prompt
     assert "pregunta por un modelo o confirma que le gusta" in prompt
-    assert "Negociacion" not in prompt
+    assert 'Regla para mover a "Negociacion"' not in prompt
+
+
+def test_prompt_entrega_regla_estructurada_exacta_de_p03():
+    prompt = build_system_prompt(
+        profile=BusinessProfile(agent_name="Nea", instructions="Vende muebles"),
+        context={
+            "lead": {"stageName": "En conversación"},
+            "pipelineStages": [
+                {"name": "En conversación", "position": 1},
+                {
+                    "name": "Interesado",
+                    "position": 2,
+                    "botMoveEnabled": True,
+                    "evidenceRule": {
+                        "allOf": ["product_identified"],
+                        "anyOf": ["product_preference", "explicit_interest"],
+                        "blockerCodes": [
+                            "missing_product",
+                            "missing_buying_signal",
+                        ],
+                    },
+                },
+            ],
+        },
+        conv=Conversation(id=1, wa_identity="56900000000"),
+    )
+
+    assert 'Evidencia estructurada para "Interesado"' in prompt
+    assert "product_identified (producto o modelo identificado)" in prompt
+    assert "product_preference" in prompt
+    assert "incluye solo las claves ya demostradas" in prompt
 
 
 def test_prompt_prohibe_move_stage_si_todas_las_etapas_estan_desactivadas():

@@ -256,7 +256,9 @@ async def run_turn(
         ]
 
     # --- LLM con tools ----------------------------------------------------
-    runtime = ToolRuntime(ctx, conv, str(crm_conv_id), profile=profile)
+    runtime = ToolRuntime(
+        ctx, conv, str(crm_conv_id), profile=profile, context=context
+    )
     try:
         final_text = await _tool_loop(
             ctx, messages, runtime, media_enabled=bool(profile.media_assets)
