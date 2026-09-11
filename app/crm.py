@@ -305,12 +305,20 @@ class CrmClient:
         return resp.status_code != 404
 
     async def create_booking(
-        self, conversation_id: str, start_utc: str
+        self, conversation_id: str, start_utc: str, kind: str = "session"
     ) -> dict[str, Any]:
+        body = {
+            "conversationId": conversation_id,
+            "startUtc": start_utc,
+        }
+        # Compatibilidad con Parley anterior: el tipo histórico era implícito.
+        # Solo enviamos el campo nuevo cuando se trata realmente de entrega.
+        if kind != "session":
+            body["kind"] = kind
         resp = await self._request(
             "POST",
             "/api/bot/bookings",
-            json={"conversationId": conversation_id, "startUtc": start_utc},
+            json=body,
         )
         if resp.status_code == 409:
             raise _booking_conflict(resp)
