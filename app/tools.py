@@ -443,6 +443,48 @@ def _validate_pipeline_request(
     }
 
 
+def _current_stage_name(context: dict[str, Any]) -> str:
+    return str((context.get("lead") or {}).get("stageName") or "").strip()
+
+
+def _forward_stage_path(
+    context: dict[str, Any], requested_stage: str
+) -> list[str]:
+    """Etapas posteriores hasta el destino, conservando el orden de Parley."""
+    stages = context.get("pipelineStages") or []
+    if not isinstance(stages, list):
+        return []
+    ordered = [
+        stage
+        for stage in stages
+        if isinstance(stage, dict) and str(stage.get("name") or "").strip()
+    ]
+    current = _current_stage_name(context).casefold()
+    target = requested_stage.casefold()
+    current_index = next(
+        (
+            index
+            for index, stage in enumerate(ordered)
+            if str(stage.get("name") or "").strip().casefold() == current
+        ),
+        -1,
+    )
+    target_index = next(
+        (
+            index
+            for index, stage in enumerate(ordered)
+            if str(stage.get("name") or "").strip().casefold() == target
+        ),
+        -1,
+    )
+    if current_index < 0 or target_index <= current_index + 1:
+        return []
+    return [
+        str(stage.get("name") or "").strip()
+        for stage in ordered[current_index + 1 : target_index + 1]
+    ]
+
+
 class ToolRuntime:
     """Ejecuta las tool-calls de UN turno y acumula sus efectos."""
 
@@ -469,6 +511,10 @@ class ToolRuntime:
         self._sent_media_ids: set[str] = set()
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        # No registra argumentos porque pueden contener datos personales. El
+        # nombre de la herramienta basta para reconstruir por qué un turno no
+        # movió el pipeline en producción.
+        logger.info("tools: ejecutando %s", name)
         try:
             if name == "update_ficha":
                 return await self._update_ficha(args)
@@ -524,8 +570,52 @@ class ToolRuntime:
             return {"ok": False, "error": "invalid_evidence"}
 
         local = _validate_pipeline_request(self._context, stage, evidence)
+        if local is not None and local.get("error") == "stage_skip":
+            return await self._advance_stage_path(stage, evidence)
         if local is not None:
             return local
+        return await self._post_stage(stage, evidence)
+
+    async def _advance_stage_path(
+        self, requested_stage: str, evidence: list[str]
+    ) -> dict[str, Any]:
+        """Convierte un salto pedido por el LLM en transiciones consecutivas.
+
+        Cada paso se valida localmente y vuelve a pasar por la autoridad de
+        Parley. Nunca escribe dos columnas de una vez: si la evidencia alcanza
+        solo hasta una etapa intermedia, se detiene allí y devuelve los datos
+        que faltan para continuar.
+        """
+        path = _forward_stage_path(self._context, requested_stage)
+        if not path:
+            return {"ok": False, "error": "stage_skip"}
+
+        moved = False
+        for next_stage in path:
+            local = _validate_pipeline_request(self._context, next_stage, evidence)
+            if local is not None:
+                if moved:
+                    local = {
+                        **local,
+                        "stageMoved": True,
+                        "stage": _current_stage_name(self._context),
+                        "requestedStage": requested_stage,
+                    }
+                return local
+            result = await self._post_stage(next_stage, evidence)
+            if not result.get("ok"):
+                return result
+            moved = moved or bool(result.get("stageMoved"))
+
+        return {
+            "ok": True,
+            "stageMoved": moved,
+            "stage": _current_stage_name(self._context),
+        }
+
+    async def _post_stage(
+        self, stage: str, evidence: list[str]
+    ) -> dict[str, Any]:
         try:
             result = await self._ctx.crm.post_move_stage(
                 self._crm_conv_id, stage, evidence
@@ -547,6 +637,7 @@ class ToolRuntime:
         lead = self._context.setdefault("lead", {})
         if isinstance(lead, dict):
             lead["stageName"] = resolved_stage
+        logger.info("tools: pipeline avanzó a %s", resolved_stage)
         return {
             "ok": True,
             "stageMoved": bool(result.get("stageMoved")),

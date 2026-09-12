@@ -141,3 +141,91 @@ def test_book_delivery_solo_existe_con_agenda_activa() -> None:
     without_agenda = {tool["function"]["name"] for tool in tool_schemas(False)}
     assert "book_delivery" in with_agenda
     assert "book_delivery" not in without_agenda
+
+
+async def test_pedido_completo_desde_nuevo_avanza_sin_saltar_columnas(
+    respx_mock,
+) -> None:
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+
+    def accepted(request: httpx.Request) -> httpx.Response:
+        stage = json.loads(request.content)["stage"]
+        return httpx.Response(
+            200,
+            json={"stageMoved": True, "lead": {"stageName": stage}},
+        )
+
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        side_effect=accepted
+    )
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        context={
+            "lead": {"stageName": "Nuevo"},
+            "pipelineStages": [
+                {
+                    "name": "Nuevo",
+                    "position": 0,
+                    "botMoveEnabled": True,
+                    "evidenceRule": None,
+                },
+                {
+                    "name": "En conversación",
+                    "position": 1,
+                    "botMoveEnabled": True,
+                    "evidenceRule": {
+                        "allOf": [],
+                        "anyOf": ["commercial_question", "product_identified"],
+                    },
+                },
+                {
+                    "name": "Interesado",
+                    "position": 2,
+                    "botMoveEnabled": True,
+                    "evidenceRule": {
+                        "allOf": ["product_identified"],
+                        "anyOf": ["product_preference", "explicit_interest"],
+                    },
+                },
+                {
+                    "name": "Pedido",
+                    "position": 3,
+                    "botMoveEnabled": True,
+                    "evidenceRule": {
+                        "allOf": [
+                            "product_identified",
+                            "order_confirmation",
+                            "quantity_confirmed",
+                            "configuration_complete",
+                            "delivery_commune",
+                            "delivery_address",
+                            "recipient_confirmed",
+                        ],
+                        "anyOf": [],
+                    },
+                },
+            ],
+        },
+    )
+    evidence = [
+        "product_identified",
+        "explicit_interest",
+        "order_confirmation",
+        "quantity_confirmed",
+        "configuration_complete",
+        "delivery_commune",
+        "delivery_address",
+        "recipient_confirmed",
+    ]
+    result = await runtime.execute(
+        "move_stage", {"stage": "Pedido", "evidence": evidence}
+    )
+
+    assert result == {"ok": True, "stageMoved": True, "stage": "Pedido"}
+    assert [
+        json.loads(call.request.content)["stage"] for call in stage_route.calls
+    ] == ["En conversación", "Interesado", "Pedido"]
+    await ctx.crm.aclose()
