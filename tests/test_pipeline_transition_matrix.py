@@ -1,6 +1,7 @@
 """P05: matriz de regresión de las decisiones comerciales de NEA."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -124,13 +125,6 @@ CASES = [
         id="retroceso-rechazado",
     ),
     pytest.param(
-        "Nuevo",
-        "Interesado",
-        ["product_identified", "explicit_interest"],
-        "stage_skip",
-        id="salto-rechazado",
-    ),
-    pytest.param(
         "Pedido",
         "Cliente",
         COMPLETE_ORDER,
@@ -221,3 +215,48 @@ async def test_pedido_incompleto_devuelve_los_datos_que_faltan(respx_mock) -> No
         "recipient_confirmed",
     ]
     assert stage_route.call_count == 0
+
+
+async def test_solicitud_lejana_avanza_solo_hasta_la_evidencia_disponible(
+    respx_mock,
+) -> None:
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+
+    def accepted(request: httpx.Request) -> httpx.Response:
+        stage = json.loads(request.content)["stage"]
+        return httpx.Response(
+            200,
+            json={"stageMoved": True, "lead": {"stageName": stage}},
+        )
+
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        side_effect=accepted
+    )
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        context=pipeline_context("Nuevo"),
+    )
+    try:
+        result = await runtime.execute(
+            "move_stage",
+            {
+                "stage": "Pedido",
+                "evidence": [
+                    "product_identified",
+                    "explicit_interest",
+                    "order_confirmation",
+                ],
+            },
+        )
+    finally:
+        await ctx.crm.aclose()
+
+    assert result["ok"] is False
+    assert result["error"] == "insufficient_evidence"
+    assert result["stageMoved"] is True
+    assert result["stage"] == "Interesado"
+    assert result["requestedStage"] == "Pedido"
+    assert stage_route.call_count == 2

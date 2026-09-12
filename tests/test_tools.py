@@ -298,7 +298,7 @@ def _pipeline_context(current: str = "Nuevo") -> dict:
     }
 
 
-async def test_napoleon_no_puede_saltar_de_nuevo_a_interesado(
+async def test_napoleon_convierte_salto_en_avances_consecutivos(
     runtime_y_ctx, respx_mock
 ):
     _runtime, ctx, conv = runtime_y_ctx
@@ -317,8 +317,11 @@ async def test_napoleon_no_puede_saltar_de_nuevo_a_interesado(
         },
     )
 
-    assert result == {"ok": False, "error": "stage_skip"}
-    assert stage_route.call_count == 0
+    assert result == {"ok": True, "stageMoved": False, "stage": "Interesado"}
+    assert stage_route.call_count == 2
+    assert [
+        json.loads(call.request.content)["stage"] for call in stage_route.calls
+    ] == ["En conversación", "Interesado"]
 
 
 async def test_napoleon_avanza_a_interesado_con_producto_y_preferencia(
