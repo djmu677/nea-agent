@@ -6,6 +6,7 @@ Endpoints:
   POST /api/bot/messages   {conversationId, text}   → 409 ai_paused|window_closed
   POST /api/bot/messages/media {conversationId, assetId} → recurso aprobado
   PUT  /api/bot/ficha      {conversationId, ficha}
+  POST /api/bot/quote      {conversationId} → cotización oficial del tenant
   POST /api/bot/stage      {conversationId, stage, evidence[]}
   POST /api/bot/handoff    {conversationId, reason}
   GET  /api/bot/availability?conversationId=&limit=&perDay=&days=
@@ -215,6 +216,18 @@ class CrmClient:
         )
         if resp.status_code != 200:
             raise CrmError(f"ficha devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def post_quote(self, conversation_id: str) -> dict[str, Any]:
+        """Pide al CRM la cotización; NEA nunca envía ni calcula importes."""
+        resp = await self._request(
+            "POST", "/api/bot/quote", json={"conversationId": conversation_id}
+        )
+        if resp.status_code == 409:
+            raise CrmConflict(_conflict_code(resp), _payload(resp))
+        if resp.status_code != 200:
+            raise CrmError(f"quote devolvió {resp.status_code}")
         data: dict[str, Any] = resp.json()
         return data
 

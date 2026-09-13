@@ -373,7 +373,9 @@ async def _tool_loop(
         reply = await ctx.llm.complete(
             messages,
             tools=tool_schemas(
-                ctx.agenda_enabled, media_enabled=media_enabled
+                ctx.agenda_enabled,
+                media_enabled=media_enabled,
+                quote_enabled=runtime.quote_enabled,
             ),
         )
         if not reply.tool_calls:

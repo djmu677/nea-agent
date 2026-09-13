@@ -99,6 +99,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "quote_order",
+            "description": (
+                "Calcula el precio del pedido con el catálogo oficial de Parley. "
+                "Úsala cuando el cliente pregunte el total, cambie una opción "
+                "del producto o antes de solicitar el avance a Pedido. Nunca "
+                "calcules importes por tu cuenta."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "move_stage",
             "description": (
                 "Avanza el lead a una etapa ABIERTA y habilitada del kanban, "
@@ -287,10 +300,13 @@ AGENDA_TOOLS = frozenset(
     {"propose_slots", "book_session", "book_delivery", "reschedule_session"}
 )
 MEDIA_TOOLS = frozenset({"send_media"})
+QUOTE_TOOLS = frozenset({"quote_order"})
 
 
 def tool_schemas(
-    agenda_enabled: bool = True, media_enabled: bool = True
+    agenda_enabled: bool = True,
+    media_enabled: bool = True,
+    quote_enabled: bool = True,
 ) -> list[dict[str, Any]]:
     """El catálogo que se le ofrece al modelo en ESTE turno.
 
@@ -299,7 +315,7 @@ def tool_schemas(
     un handoff limpio. Que no exista la herramienta es más claro que pedirle al
     prompt que se acuerde de no usarla.
     """
-    if agenda_enabled and media_enabled:
+    if agenda_enabled and media_enabled and quote_enabled:
         return TOOL_SCHEMAS
     return [
         t
@@ -307,6 +323,7 @@ def tool_schemas(
         if (
             (agenda_enabled or t.get("function", {}).get("name") not in AGENDA_TOOLS)
             and (media_enabled or t.get("function", {}).get("name") not in MEDIA_TOOLS)
+            and (quote_enabled or t.get("function", {}).get("name") not in QUOTE_TOOLS)
         )
     ]
 
@@ -520,6 +537,10 @@ class ToolRuntime:
         self.proposed = False
         self._sent_media_ids: set[str] = set()
 
+    @property
+    def quote_enabled(self) -> bool:
+        return bool((self._context.get("quote") or {}).get("enabled"))
+
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         # No registra argumentos porque pueden contener datos personales. El
         # nombre de la herramienta basta para reconstruir por qué un turno no
@@ -528,6 +549,8 @@ class ToolRuntime:
         try:
             if name == "update_ficha":
                 return await self._update_ficha(args)
+            if name == "quote_order":
+                return await self._quote_order()
             if name == "move_stage":
                 return await self._move_stage(args)
             if name == "send_media":
@@ -586,6 +609,35 @@ class ToolRuntime:
                 "No vuelvas a preguntar los campos de orderSnapshot; pregunta "
                 "solo el siguiente dato realmente ausente."
             ),
+        }
+
+    async def _quote_order(self) -> dict[str, Any]:
+        result = await self._ctx.crm.post_quote(self._crm_conv_id)
+        quote = result.get("quote") if isinstance(result, dict) else None
+        if result.get("available") is False:
+            return {
+                "ok": False,
+                "error": "quote_not_configured",
+                "instruction": "No inventes el precio; informa que el equipo debe confirmarlo.",
+            }
+        if not isinstance(quote, dict):
+            return {"ok": False, "error": "invalid_quote"}
+        if quote.get("ok") is False:
+            return {
+                "ok": False,
+                "error": quote.get("code") or "quote_incomplete",
+                "detalle": quote.get("message"),
+                "instruction": "Pide únicamente el dato faltante o corrige la opción.",
+            }
+        return {
+            "ok": True,
+            "currency": quote.get("currency"),
+            "basePriceCents": quote.get("basePriceCents"),
+            "subtotalCents": quote.get("subtotalCents"),
+            "shippingCents": quote.get("shippingCents"),
+            "totalCents": quote.get("totalCents"),
+            "applied": quote.get("applied") or [],
+            "instruction": "Comunica exactamente estos importes, sin recalcularlos.",
         }
 
     async def _move_stage(self, args: dict[str, Any]) -> dict[str, Any]:
