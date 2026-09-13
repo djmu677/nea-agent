@@ -28,6 +28,7 @@ from app.crm import (
 from app.order import (
     ORDER_FIELDS,
     ORDER_FIELD_SCHEMAS,
+    confirmed,
     evidence_from_ficha,
     normalize_order_patch,
     order_snapshot,
@@ -541,6 +542,17 @@ class ToolRuntime:
     def quote_enabled(self) -> bool:
         return bool((self._context.get("quote") or {}).get("enabled"))
 
+    @property
+    def order_confirmed(self) -> bool:
+        """Estado comercial vigente, incluida cualquier actualización del turno."""
+        contact = self._context.get("contact") or {}
+        ficha = contact.get("ficha") if isinstance(contact, dict) else {}
+        return (
+            confirmed(ficha.get("order_confirmation"))
+            if isinstance(ficha, dict)
+            else False
+        )
+
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         # No registra argumentos porque pueden contener datos personales. El
         # nombre de la herramienta basta para reconstruir por qué un turno no
@@ -627,7 +639,13 @@ class ToolRuntime:
                 "ok": False,
                 "error": quote.get("code") or "quote_incomplete",
                 "detalle": quote.get("message"),
-                "instruction": "Pide únicamente el dato faltante o corrige la opción.",
+                "missingField": quote.get("missingField"),
+                "receivedValue": quote.get("receivedValue"),
+                "allowedOptions": quote.get("allowedOptions") or [],
+                "instruction": (
+                    "Pide únicamente missingField usando allowedOptions. "
+                    "No traduzcas 'configuración' a otro atributo ni inventes opciones."
+                ),
             }
         return {
             "ok": True,

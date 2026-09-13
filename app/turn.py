@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any, AsyncIterator
@@ -38,6 +39,84 @@ CONTEXT_ATTEMPTS = 3  # el relay puede tardar un instante en aterrizar en el CRM
 # Comando de pruebas: reinicia la memoria de ESA conversación. Disponible SOLO
 # para identidades de TESTER_WA_IDS (vacía = comando apagado).
 RESET_COMMANDS = frozenset({"/reset", "#reset"})
+
+# El modelo puede omitir una herramienta aunque el prompt la declare
+# obligatoria. Estas señales no calculan nada: solo obligan a consultar la
+# fuente oficial de Parley antes de permitir una respuesta monetaria.
+QUOTE_TERMS = (
+    "cuanto cuesta",
+    "cuanto sale",
+    "cuanto pago",
+    "cuanto voy a pagar",
+    "precio",
+    "total",
+    "valor",
+    "costo",
+    "tarifa",
+    "cotiza",
+    "cotizacion",
+    "incluye el envio",
+    "incluido el envio",
+)
+SHIPPING_TERMS = ("envio", "despacho", "entrega")
+QUOTE_AFFECTING_FIELDS = frozenset(
+    {
+        "product",
+        "product_variant",
+        "product_configuration",
+        "material",
+        "color",
+        "legs",
+        "quantity_confirmed",
+        "order_extras",
+        "delivery_commune",
+        "order_confirmation",
+        "configuration_complete",
+    }
+)
+
+
+def _plain_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(
+            str(item.get("text") or "")
+            for item in value
+            if isinstance(item, dict)
+        )
+    return ""
+
+
+def _canonical_text(value: str) -> str:
+    return " ".join(
+        unicodedata.normalize("NFD", value)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .casefold()
+        .split()
+    )
+
+
+def _asks_for_quote(messages: list[dict[str, Any]]) -> bool:
+    """Detecta precio explícito y continuaciones cortas de una tarifa."""
+    user_texts = [
+        _canonical_text(_plain_text(message.get("content")))
+        for message in messages
+        if message.get("role") == "user"
+    ]
+    if not user_texts:
+        return False
+    current = user_texts[-1]
+    if any(term in current for term in QUOTE_TERMS):
+        return True
+    recent = user_texts[-3:-1]
+    prior_shipping_quote = any(
+        any(term in text for term in QUOTE_TERMS)
+        and any(term in text for term in SHIPPING_TERMS)
+        for text in recent
+    )
+    return len(current.split()) <= 8 and prior_shipping_quote
 
 
 def _agent_tz(settings: Any) -> ZoneInfo:
@@ -368,8 +447,17 @@ async def _tool_loop(
     *,
     media_enabled: bool = False,
 ) -> str | None:
-    """Rondas de tool-calling hasta obtener texto final (o rendirse)."""
-    for _ in range(MAX_TOOL_ROUNDS):
+    """Rondas de tools con cotización oficial obligatoria cuando corresponde.
+
+    El prompt orienta al modelo, pero el servidor no confía en que recuerde
+    llamar `quote_order`: si el lead pide un importe, o cambia una opción de
+    un pedido ya confirmado, se descarta cualquier texto final prematuro y se
+    inyecta primero el resultado oficial de Parley.
+    """
+    quote_required = runtime.quote_enabled and _asks_for_quote(messages)
+    quote_fresh = False
+    forced_quotes = 0
+    for _ in range(MAX_TOOL_ROUNDS + 2):
         reply = await ctx.llm.complete(
             messages,
             tools=tool_schemas(
@@ -379,6 +467,38 @@ async def _tool_loop(
             ),
         )
         if not reply.tool_calls:
+            if runtime.quote_enabled and quote_required and not quote_fresh:
+                forced_quotes += 1
+                call_id = f"forced_quote_{forced_quotes}"
+                logger.info("turno: cotización oficial obligatoria antes de responder")
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": "quote_order",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    }
+                )
+                result = await runtime.execute("quote_order", {})
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(
+                            result, ensure_ascii=False, default=str
+                        ),
+                    }
+                )
+                quote_fresh = True
+                continue
             return reply.content  # turno de puro texto
         # content vacío con tool_calls es normal (turno solo-herramientas)
         messages.append(
@@ -400,6 +520,17 @@ async def _tool_loop(
         )
         for tc in reply.tool_calls:
             result = await runtime.execute(tc.name, tc.arguments)
+            if tc.name == "quote_order":
+                quote_fresh = True
+            elif tc.name == "update_ficha" and QUOTE_AFFECTING_FIELDS.intersection(
+                tc.arguments
+            ):
+                # Elegir un color durante una consulta exploratoria no debe
+                # disparar un cierre prematuro. En un pedido confirmado o una
+                # consulta monetaria, cualquier cambio invalida el cálculo.
+                if quote_required or runtime.order_confirmed:
+                    quote_required = True
+                    quote_fresh = False
             messages.append(
                 {
                     "role": "tool",
