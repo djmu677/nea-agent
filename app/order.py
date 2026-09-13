@@ -27,6 +27,10 @@ ORDER_FIELD_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": "Material o tela confirmada.",
     },
     "color": {"type": "string", "description": "Color confirmado."},
+    "legs": {
+        "type": "string",
+        "description": "Tipo de patas o soporte confirmado.",
+    },
     "quantity_confirmed": {
         "type": "string",
         "description": "Cantidad confirmada por el cliente.",
@@ -43,6 +47,10 @@ ORDER_FIELD_SCHEMAS: dict[str, dict[str, Any]] = {
         "type": "string",
         "description": "Nombre de quien recibe el pedido.",
     },
+    "email": {
+        "type": "string",
+        "description": "Correo entregado voluntariamente por el cliente.",
+    },
     "delivery_date_requested": {
         "type": "string",
         "description": "Fecha o plazo de entrega solicitado; no implica reserva.",
@@ -50,6 +58,23 @@ ORDER_FIELD_SCHEMAS: dict[str, dict[str, Any]] = {
     "payment_method": {
         "type": "string",
         "description": "Medio de pago elegido, solo si el cliente lo confirmó.",
+    },
+    "order_extras": {
+        "type": "array",
+        "description": (
+            "Adicionales confirmados. Guarda nombre y cantidad; no inventes "
+            "precios ni totales."
+        ),
+        "maxItems": 12,
+        "items": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "quantity": {"type": "integer", "minimum": 1},
+            },
+            "required": ["label", "quantity"],
+            "additionalProperties": False,
+        },
     },
     "order_confirmation": {
         "type": "boolean",
@@ -108,7 +133,14 @@ def evidence_from_ficha(ficha: dict[str, Any] | None) -> list[str]:
         evidence.append("product_identified")
     if any(
         nonempty(ficha.get(key))
-        for key in ("product_variant", "product_configuration", "material", "color")
+        for key in (
+            "product_variant",
+            "product_configuration",
+            "material",
+            "color",
+            "legs",
+            "order_extras",
+        )
     ):
         evidence.append("product_preference")
     if confirmed(ficha.get("order_confirmation")):
