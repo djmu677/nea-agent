@@ -229,3 +229,75 @@ async def test_pedido_completo_desde_nuevo_avanza_sin_saltar_columnas(
         json.loads(call.request.content)["stage"] for call in stage_route.calls
     ] == ["En conversación", "Interesado", "Pedido"]
     await ctx.crm.aclose()
+
+
+async def test_movimiento_reutiliza_evidencia_de_la_ficha_sin_repreguntar(
+    respx_mock,
+) -> None:
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(
+            200,
+            json={"stageMoved": True, "lead": {"stageName": "Pedido"}},
+        )
+    )
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        context={
+            "contact": {
+                "ficha": {
+                    "product": "Futón Globo",
+                    "product_configuration": "Sin brazos",
+                    "material": "Felpa",
+                    "color": "Rojo",
+                    "quantity_confirmed": "1",
+                    "delivery_commune": "Lampa",
+                    "delivery_address": "San Eduardo 243",
+                    "recipient_confirmed": "José Márquez",
+                    "order_confirmation": True,
+                    "configuration_complete": True,
+                }
+            },
+            "lead": {"stageName": "Interesado"},
+            "pipelineStages": [
+                {"name": "Interesado", "position": 2},
+                {
+                    "name": "Pedido",
+                    "position": 3,
+                    "botMoveEnabled": True,
+                    "evidenceRule": {
+                        "allOf": [
+                            "product_identified",
+                            "order_confirmation",
+                            "quantity_confirmed",
+                            "configuration_complete",
+                            "delivery_commune",
+                            "delivery_address",
+                            "recipient_confirmed",
+                        ],
+                        "anyOf": [],
+                    },
+                },
+            ],
+        },
+    )
+
+    result = await runtime.execute(
+        "move_stage", {"stage": "Pedido", "evidence": []}
+    )
+
+    assert result == {"ok": True, "stageMoved": True, "stage": "Pedido"}
+    sent = json.loads(stage_route.calls[0].request.content)
+    assert set(sent["evidence"]) >= {
+        "product_identified",
+        "order_confirmation",
+        "quantity_confirmed",
+        "configuration_complete",
+        "delivery_commune",
+        "delivery_address",
+        "recipient_confirmed",
+    }
+    await ctx.crm.aclose()

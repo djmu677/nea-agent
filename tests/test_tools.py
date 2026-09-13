@@ -152,6 +152,87 @@ async def test_update_ficha_manda_lo_que_haya(runtime_y_ctx, respx_mock):
     assert body["ficha"]["campo_raro"] == "x"
 
 
+async def test_update_ficha_acumula_pedido_y_devuelve_hechos_confirmados(
+    respx_mock,
+):
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    ficha_route = respx_mock.put(f"{CRM_URL}/api/bot/ficha").mock(
+        return_value=httpx.Response(200, json={"ficha": {}, "stageMoved": False})
+    )
+    context = {
+        "contact": {
+            "ficha": {
+                "product": "Futón Globo",
+                "material": "Felpa",
+                "color": "Rojo",
+            }
+        }
+    }
+    runtime = ToolRuntime(ctx, conv, CRM_CONV_ID, context=context)
+
+    result = await runtime.execute(
+        "update_ficha",
+        {
+            "product_configuration": "  Sin brazos  ",
+            "quantity_confirmed": "1",
+            "delivery_commune": "Lampa",
+            "delivery_address": "San Eduardo 243",
+            "recipient_confirmed": "José Márquez",
+            "order_confirmation": True,
+            "configuration_complete": True,
+        },
+    )
+
+    sent = json.loads(ficha_route.calls[0].request.content)["ficha"]
+    assert sent["product_configuration"] == "Sin brazos"
+    assert result["orderSnapshot"] == {
+        "product": "Futón Globo",
+        "product_configuration": "Sin brazos",
+        "material": "Felpa",
+        "color": "Rojo",
+        "quantity_confirmed": "1",
+        "delivery_commune": "Lampa",
+        "delivery_address": "San Eduardo 243",
+        "recipient_confirmed": "José Márquez",
+        "order_confirmation": True,
+        "configuration_complete": True,
+    }
+    assert {
+        "product_identified",
+        "product_preference",
+        "explicit_interest",
+        "order_confirmation",
+        "quantity_confirmed",
+        "configuration_complete",
+        "delivery_commune",
+        "delivery_address",
+        "recipient_confirmed",
+    } <= set(result["evidenceAvailable"])
+    await ctx.crm.aclose()
+
+
+def test_update_ficha_expone_campos_formales_del_pedido():
+    update = next(
+        tool for tool in tool_schemas(False)
+        if tool["function"]["name"] == "update_ficha"
+    )
+    fields = update["function"]["parameters"]["properties"]
+
+    assert {
+        "product",
+        "product_configuration",
+        "material",
+        "color",
+        "quantity_confirmed",
+        "delivery_commune",
+        "delivery_address",
+        "recipient_confirmed",
+        "order_confirmation",
+        "configuration_complete",
+    } <= set(fields)
+
+
 async def test_move_stage_manda_nombre_y_devuelve_movimiento(runtime_y_ctx, respx_mock):
     runtime, ctx, conv = runtime_y_ctx
     stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
