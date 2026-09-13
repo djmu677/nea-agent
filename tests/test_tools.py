@@ -242,6 +242,57 @@ def test_update_ficha_expone_campos_formales_del_pedido():
     } <= set(fields)
 
 
+def test_quote_order_solo_se_expone_si_parley_lo_habilito():
+    enabled = {tool["function"]["name"] for tool in tool_schemas(False, False, True)}
+    disabled = {tool["function"]["name"] for tool in tool_schemas(False, False, False)}
+    assert "quote_order" in enabled
+    assert "quote_order" not in disabled
+
+
+async def test_quote_order_devuelve_solo_importes_oficiales(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    route = respx_mock.post(f"{CRM_URL}/api/bot/quote").mock(
+        return_value=httpx.Response(200, json={
+            "available": True,
+            "quote": {
+                "ok": True,
+                "currency": "CLP",
+                "basePriceCents": 14_500_000,
+                "subtotalCents": 16_500_000,
+                "shippingCents": 1_500_000,
+                "totalCents": 18_000_000,
+                "applied": ["Brazos"],
+            },
+        })
+    )
+    result = await runtime.execute("quote_order", {})
+    assert result == {
+        "ok": True,
+        "currency": "CLP",
+        "basePriceCents": 14_500_000,
+        "subtotalCents": 16_500_000,
+        "shippingCents": 1_500_000,
+        "totalCents": 18_000_000,
+        "applied": ["Brazos"],
+        "instruction": "Comunica exactamente estos importes, sin recalcularlos.",
+    }
+    assert json.loads(route.calls[0].request.content) == {"conversationId": CRM_CONV_ID}
+
+
+async def test_quote_order_pide_el_dato_faltante_sin_inventar(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.post(f"{CRM_URL}/api/bot/quote").mock(
+        return_value=httpx.Response(200, json={
+            "available": True,
+            "quote": {"ok": False, "code": "commune_required", "message": "Falta confirmar la comuna"},
+        })
+    )
+    result = await runtime.execute("quote_order", {})
+    assert result["ok"] is False
+    assert result["error"] == "commune_required"
+    assert "Falta confirmar" in result["detalle"]
+
+
 async def test_move_stage_manda_nombre_y_devuelve_movimiento(runtime_y_ctx, respx_mock):
     runtime, ctx, conv = runtime_y_ctx
     stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
