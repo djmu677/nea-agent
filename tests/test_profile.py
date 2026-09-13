@@ -202,6 +202,32 @@ def test_prompt_prohibe_move_stage_si_todas_las_etapas_estan_desactivadas():
     assert "desactivó todos los movimientos automáticos" in prompt
 
 
+def test_prompt_no_repregunta_datos_estructurados_del_pedido():
+    prompt = build_system_prompt(
+        profile=BusinessProfile(agent_name="Globo", instructions="Vende muebles"),
+        context={
+            "contact": {
+                "ficha": {
+                    "product": "Futón Globo",
+                    "product_configuration": "Sin brazos",
+                    "material": "Felpa",
+                    "color": "Rojo",
+                    "quantity_confirmed": "1",
+                }
+            },
+            "lead": {"stageName": "Interesado"},
+        },
+        conv=Conversation(id=1, wa_identity="56900000000"),
+    )
+
+    assert "Datos estructurados del pedido YA confirmados" in prompt
+    assert '"product_configuration": "Sin brazos"' in prompt
+    assert '"quantity_confirmed": "1"' in prompt
+    assert "No vuelvas a solicitarlos" in prompt
+    assert "RESPONDE PRIMERO" in prompt
+    assert "envíalo directamente" in prompt
+
+
 def test_profile_from_payload_tolerante_a_vacios():
     prof = profile_from_payload({}, default_name="Nea")
     assert prof.agent_name == "Nea"

@@ -25,6 +25,13 @@ from app.crm import (
     SlotTaken,
     canonical_handoff_reason,
 )
+from app.order import (
+    ORDER_FIELDS,
+    ORDER_FIELD_SCHEMAS,
+    evidence_from_ficha,
+    normalize_order_patch,
+    order_snapshot,
+)
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
 
@@ -62,7 +69,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "update_ficha",
             "description": (
                 "Guarda o actualiza la ficha del lead en el CRM (merge: solo los "
-                "campos que mandes). Llámala en cuanto descubras un dato nuevo."
+                "campos que mandes). Llámala en cuanto descubras un dato nuevo. "
+                "Para pedidos usa los campos específicos; no escondas esos datos "
+                "en notas. Envía juntos todos los datos nuevos del mensaje."
             ),
             "parameters": {
                 "type": "object",
@@ -82,6 +91,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "description": "agendo | dio_diy | handoff | sin_respuesta",
                     },
                     "notas": {"type": "string"},
+                    **ORDER_FIELD_SCHEMAS,
                 },
             },
         },
@@ -546,11 +556,37 @@ class ToolRuntime:
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.
-        ficha = {k: v for k, v in args.items() if v is not None}
+        ficha = {
+            k: v for k, v in args.items() if v is not None and k not in ORDER_FIELDS
+        }
+        ficha.update(normalize_order_patch(args))
         if not ficha:
             return {"ok": True, "nota": "sin campos nuevos"}
-        await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
-        return {"ok": True}
+        # Los campos formales del pedido se limpian sin eliminar los campos
+        # históricos/libres que otros tipos de negocio ya utilizan.
+        result = await self._ctx.crm.put_ficha(self._crm_conv_id, ficha)
+
+        contact = self._context.setdefault("contact", {})
+        current = contact.setdefault("ficha", {}) if isinstance(contact, dict) else {}
+        if not isinstance(current, dict):
+            current = {}
+            if isinstance(contact, dict):
+                contact["ficha"] = current
+        current.update(ficha)
+        returned = result.get("ficha") if isinstance(result, dict) else None
+        if isinstance(returned, dict):
+            current.update(returned)
+
+        snapshot = order_snapshot(current)
+        return {
+            "ok": True,
+            "orderSnapshot": snapshot,
+            "evidenceAvailable": evidence_from_ficha(current),
+            "instruction": (
+                "No vuelvas a preguntar los campos de orderSnapshot; pregunta "
+                "solo el siguiente dato realmente ausente."
+            ),
+        }
 
     async def _move_stage(self, args: dict[str, Any]) -> dict[str, Any]:
         stage = str(args.get("stage") or "").strip()
@@ -568,6 +604,12 @@ class ToolRuntime:
         )
         if len(evidence) != len(raw_evidence):
             return {"ok": False, "error": "invalid_evidence"}
+
+        # Si un hecho ya está guardado en la ficha estructurada, no dependemos
+        # de que el modelo recuerde repetir su clave en cada movimiento.
+        contact = self._context.get("contact") or {}
+        ficha = contact.get("ficha") if isinstance(contact, dict) else {}
+        evidence = list(dict.fromkeys([*evidence, *evidence_from_ficha(ficha)]))
 
         local = _validate_pipeline_request(self._context, stage, evidence)
         if local is not None and local.get("error") == "stage_skip":
