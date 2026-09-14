@@ -5,7 +5,7 @@ import httpx
 
 from app.llm import LlmReply, ToolCall
 from app.tools import ToolRuntime
-from app.turn import _asks_for_quote, _tool_loop
+from app.turn import _asks_for_quote, _has_explicit_purchase_intent, _tool_loop
 from tests.conftest import CRM_CONV_ID, CRM_URL, FakeLLM, IDENTITY, make_ctx
 
 
@@ -163,3 +163,13 @@ def test_reconoce_continuacion_corta_de_una_consulta_de_despacho():
         {"role": "user", "content": "¿Y a Pudahuel?"},
     ]
     assert _asks_for_quote(messages) is True
+
+
+def test_reconoce_intencion_inequivoca_de_compra_sin_confundir_una_negacion():
+    assert _has_explicit_purchase_intent("Sí, quiero pedir el sofá Napoleón")
+    assert _has_explicit_purchase_intent("Me gustaría hacer un pedido")
+    assert _has_explicit_purchase_intent("Confirmo el pedido")
+    assert not _has_explicit_purchase_intent(
+        "Yo no he dicho que lo voy a pedir, solo estoy preguntando"
+    )
+    assert not _has_explicit_purchase_intent("Supongamos que quisiera comprarlo")
