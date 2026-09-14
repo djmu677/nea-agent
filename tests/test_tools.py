@@ -583,6 +583,7 @@ def test_move_stage_exige_evidencia_estructurada_en_el_schema():
     assert params["required"] == ["stage", "evidence"]
     assert params["properties"]["evidence"]["items"]["enum"] == [
         "commercial_question",
+        "four_customer_turns",
         "product_identified",
         "product_preference",
         "explicit_interest",
