@@ -11,9 +11,11 @@ from app.tools import ToolRuntime
 from tests.conftest import CRM_CONV_ID, CRM_URL, IDENTITY, make_ctx
 
 
-COMPLETE_ORDER = [
+CONFIRMED_ORDER = [
     "product_identified",
     "order_confirmation",
+]
+COMPLETE_ORDER = CONFIRMED_ORDER + [
     "quantity_confirmed",
     "configuration_complete",
     "delivery_commune",
@@ -40,7 +42,11 @@ def pipeline_context(current: str) -> dict[str, Any]:
                 "botMoveEnabled": True,
                 "evidenceRule": {
                     "allOf": [],
-                    "anyOf": ["commercial_question", "product_identified"],
+                    "anyOf": [
+                        "commercial_question",
+                        "product_identified",
+                        "four_customer_turns",
+                    ],
                     "blockerCodes": ["greeting_only", "generic_question_only"],
                 },
             },
@@ -64,17 +70,9 @@ def pipeline_context(current: str) -> dict[str, Any]:
                 "position": 3,
                 "botMoveEnabled": True,
                 "evidenceRule": {
-                    "allOf": COMPLETE_ORDER,
+                    "allOf": CONFIRMED_ORDER,
                     "anyOf": [],
-                    "blockerCodes": [
-                        "missing_product",
-                        "ambiguous_confirmation",
-                        "missing_quantity",
-                        "missing_configuration",
-                        "missing_delivery_commune",
-                        "missing_delivery_address",
-                        "missing_recipient",
-                    ],
+                    "blockerCodes": ["missing_product", "ambiguous_confirmation"],
                 },
             },
         ],
@@ -107,8 +105,8 @@ CASES = [
         "Interesado",
         "Pedido",
         ["product_identified", "order_confirmation", "delivery_commune"],
-        "insufficient_evidence",
-        id="pedido-incompleto-permanece-en-interesado",
+        None,
+        id="intencion-inequivoca-avanza-a-pedido-aunque-falten-detalles",
     ),
     pytest.param(
         "Interesado",
@@ -180,7 +178,7 @@ async def test_matriz_completa_antes_de_escribir_en_parley(
         assert stage_route.call_count == 0
 
 
-async def test_pedido_incompleto_devuelve_los_datos_que_faltan(respx_mock) -> None:
+async def test_pedido_solo_rechaza_si_falta_producto_o_confirmacion(respx_mock) -> None:
     ctx = make_ctx()
     conv = await ctx.store.get_or_create_conversation(IDENTITY)
     stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
@@ -198,22 +196,13 @@ async def test_pedido_incompleto_devuelve_los_datos_que_faltan(respx_mock) -> No
             "move_stage",
             {
                 "stage": "Pedido",
-                "evidence": [
-                    "product_identified",
-                    "order_confirmation",
-                    "delivery_commune",
-                ],
+                "evidence": ["product_identified"],
             },
         )
     finally:
         await ctx.crm.aclose()
 
-    assert result["missingEvidence"] == [
-        "quantity_confirmed",
-        "configuration_complete",
-        "delivery_address",
-        "recipient_confirmed",
-    ]
+    assert result["missingEvidence"] == ["order_confirmation"]
     assert stage_route.call_count == 0
 
 
@@ -254,9 +243,88 @@ async def test_solicitud_lejana_avanza_solo_hasta_la_evidencia_disponible(
     finally:
         await ctx.crm.aclose()
 
-    assert result["ok"] is False
-    assert result["error"] == "insufficient_evidence"
-    assert result["stageMoved"] is True
-    assert result["stage"] == "Interesado"
-    assert result["requestedStage"] == "Pedido"
-    assert stage_route.call_count == 2
+    assert result == {"ok": True, "stageMoved": True, "stage": "Pedido"}
+    assert stage_route.call_count == 3
+
+
+async def test_respaldo_determinista_lleva_intencion_explicita_hasta_pedido(
+    respx_mock,
+) -> None:
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    context = pipeline_context("Nuevo")
+    context["contact"] = {"ficha": {"product": "Sofá Catalina"}}
+    ficha_route = respx_mock.put(f"{CRM_URL}/api/bot/ficha").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "ficha": {
+                    "product": "Sofá Catalina",
+                    "order_confirmation": True,
+                }
+            },
+        )
+    )
+
+    def accepted(request: httpx.Request) -> httpx.Response:
+        stage = json.loads(request.content)["stage"]
+        return httpx.Response(
+            200,
+            json={"stageMoved": True, "lead": {"stageName": stage}},
+        )
+
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        side_effect=accepted
+    )
+    runtime = ToolRuntime(ctx, conv, CRM_CONV_ID, context=context)
+    try:
+        result = await runtime.ensure_pipeline_progress(
+            customer_turns=2,
+            explicit_purchase_intent=True,
+        )
+    finally:
+        await ctx.crm.aclose()
+
+    assert result == {"ok": True, "stageMoved": True, "stage": "Pedido"}
+    assert ficha_route.call_count == 1
+    assert [
+        json.loads(call.request.content)["stage"] for call in stage_route.calls
+    ] == ["En conversación", "Interesado", "Pedido"]
+
+
+async def test_cuarta_intervencion_avanza_a_en_conversacion_sin_comprar(
+    respx_mock,
+) -> None:
+    ctx = make_ctx()
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "stageMoved": True,
+                "lead": {"stageName": "En conversación"},
+            },
+        )
+    )
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        context=pipeline_context("Nuevo"),
+    )
+    try:
+        result = await runtime.ensure_pipeline_progress(
+            customer_turns=4,
+            explicit_purchase_intent=False,
+        )
+    finally:
+        await ctx.crm.aclose()
+
+    assert result == {
+        "ok": True,
+        "stageMoved": True,
+        "stage": "En conversación",
+    }
+    assert json.loads(stage_route.calls[0].request.content)["evidence"] == [
+        "four_customer_turns"
+    ]

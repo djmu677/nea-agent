@@ -293,6 +293,32 @@ async def test_quote_order_pide_el_dato_faltante_sin_inventar(runtime_y_ctx, res
     assert "Falta confirmar" in result["detalle"]
 
 
+async def test_quote_order_conserva_campo_y_opciones_exactas(runtime_y_ctx, respx_mock):
+    runtime, ctx, conv = runtime_y_ctx
+    respx_mock.post(f"{CRM_URL}/api/bot/quote").mock(
+        return_value=httpx.Response(200, json={
+            "available": True,
+            "quote": {
+                "ok": False,
+                "code": "option_required",
+                "message": "Falta confirmar la configuración",
+                "missingField": "product_configuration",
+                "allowedOptions": ["L izquierda", "L derecha", "Módulo separado"],
+            },
+        })
+    )
+
+    result = await runtime.execute("quote_order", {})
+
+    assert result["missingField"] == "product_configuration"
+    assert result["allowedOptions"] == [
+        "L izquierda",
+        "L derecha",
+        "Módulo separado",
+    ]
+    assert "No traduzcas" in result["instruction"]
+
+
 async def test_move_stage_manda_nombre_y_devuelve_movimiento(runtime_y_ctx, respx_mock):
     runtime, ctx, conv = runtime_y_ctx
     stage_route = respx_mock.post(f"{CRM_URL}/api/bot/stage").mock(
@@ -557,6 +583,7 @@ def test_move_stage_exige_evidencia_estructurada_en_el_schema():
     assert params["required"] == ["stage", "evidence"]
     assert params["properties"]["evidence"]["items"]["enum"] == [
         "commercial_question",
+        "four_customer_turns",
         "product_identified",
         "product_preference",
         "explicit_interest",

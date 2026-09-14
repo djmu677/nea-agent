@@ -28,6 +28,7 @@ from app.crm import (
 from app.order import (
     ORDER_FIELDS,
     ORDER_FIELD_SCHEMAS,
+    confirmed,
     evidence_from_ficha,
     normalize_order_patch,
     order_snapshot,
@@ -39,6 +40,7 @@ logger = logging.getLogger("nea.tools")
 
 COMMERCIAL_EVIDENCE_KEYS = (
     "commercial_question",
+    "four_customer_turns",
     "product_identified",
     "product_preference",
     "explicit_interest",
@@ -103,7 +105,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Calcula el precio del pedido con el catálogo oficial de Parley. "
                 "Úsala cuando el cliente pregunte el total, cambie una opción "
-                "del producto o antes de solicitar el avance a Pedido. Nunca "
+                "del producto o necesite una cotización. El precio no es un "
+                "requisito para mover a Pedido. Nunca "
                 "calcules importes por tu cuenta."
             ),
             "parameters": {"type": "object", "properties": {}},
@@ -541,6 +544,17 @@ class ToolRuntime:
     def quote_enabled(self) -> bool:
         return bool((self._context.get("quote") or {}).get("enabled"))
 
+    @property
+    def order_confirmed(self) -> bool:
+        """Estado comercial vigente, incluida cualquier actualización del turno."""
+        contact = self._context.get("contact") or {}
+        ficha = contact.get("ficha") if isinstance(contact, dict) else {}
+        return (
+            confirmed(ficha.get("order_confirmation"))
+            if isinstance(ficha, dict)
+            else False
+        )
+
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         # No registra argumentos porque pueden contener datos personales. El
         # nombre de la herramienta basta para reconstruir por qué un turno no
@@ -576,6 +590,71 @@ class ToolRuntime:
                 "error": "crm_error",
                 "detalle": "no pude completar la acción; continúa la conversación o haz handoff",
             }
+
+    async def ensure_pipeline_progress(
+        self, *, customer_turns: int, explicit_purchase_intent: bool
+    ) -> dict[str, Any]:
+        """Aplica mínimos comerciales que no deben depender del LLM.
+
+        Parley conserva la autoridad y vuelve a validar cada transición. Esta
+        rutina solo solicita avances hacia etapas abiertas ya publicadas en el
+        contexto del mismo tenant.
+        """
+        stages = self._context.get("pipelineStages") or []
+        if not isinstance(stages, list):
+            return {"ok": True, "stageMoved": False}
+
+        def stage_for(key: str, fallback: str) -> dict[str, Any] | None:
+            return next(
+                (
+                    stage
+                    for stage in stages
+                    if isinstance(stage, dict)
+                    and (
+                        str(stage.get("botStageKey") or "").casefold() == key
+                        or str(stage.get("name") or "").strip().casefold()
+                        == fallback.casefold()
+                    )
+                ),
+                None,
+            )
+
+        target = (
+            stage_for("order", "Pedido")
+            if explicit_purchase_intent
+            else stage_for("conversation", "En conversación")
+            if customer_turns >= 4
+            else None
+        )
+        if target is None or target.get("botMoveEnabled", True) is False:
+            return {"ok": True, "stageMoved": False}
+
+        target_name = str(target.get("name") or "").strip()
+        current_name = _current_stage_name(self._context)
+        positions = {
+            str(stage.get("name") or "").strip().casefold(): index
+            for index, stage in enumerate(stages)
+            if isinstance(stage, dict)
+        }
+        current_index = positions.get(current_name.casefold(), -1)
+        target_index = positions.get(target_name.casefold(), -1)
+        if current_index >= target_index >= 0:
+            return {"ok": True, "stageMoved": False, "stage": current_name}
+
+        evidence: list[str] = []
+        if explicit_purchase_intent:
+            saved = await self.execute(
+                "update_ficha", {"order_confirmation": True}
+            )
+            if not saved.get("ok"):
+                logger.warning("pipeline: no pude persistir confirmación de pedido")
+            evidence.extend(("explicit_interest", "order_confirmation"))
+        elif customer_turns >= 4:
+            evidence.append("four_customer_turns")
+
+        return await self.execute(
+            "move_stage", {"stage": target_name, "evidence": evidence}
+        )
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.
@@ -627,7 +706,13 @@ class ToolRuntime:
                 "ok": False,
                 "error": quote.get("code") or "quote_incomplete",
                 "detalle": quote.get("message"),
-                "instruction": "Pide únicamente el dato faltante o corrige la opción.",
+                "missingField": quote.get("missingField"),
+                "receivedValue": quote.get("receivedValue"),
+                "allowedOptions": quote.get("allowedOptions") or [],
+                "instruction": (
+                    "Pide únicamente missingField usando allowedOptions. "
+                    "No traduzcas 'configuración' a otro atributo ni inventes opciones."
+                ),
             }
         return {
             "ok": True,
