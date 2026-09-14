@@ -195,15 +195,7 @@ async def test_pedido_completo_desde_nuevo_avanza_sin_saltar_columnas(
                     "position": 3,
                     "botMoveEnabled": True,
                     "evidenceRule": {
-                        "allOf": [
-                            "product_identified",
-                            "order_confirmation",
-                            "quantity_confirmed",
-                            "configuration_complete",
-                            "delivery_commune",
-                            "delivery_address",
-                            "recipient_confirmed",
-                        ],
+                        "allOf": ["product_identified", "order_confirmation"],
                         "anyOf": [],
                     },
                 },
@@ -269,15 +261,7 @@ async def test_movimiento_reutiliza_evidencia_de_la_ficha_sin_repreguntar(
                     "position": 3,
                     "botMoveEnabled": True,
                     "evidenceRule": {
-                        "allOf": [
-                            "product_identified",
-                            "order_confirmation",
-                            "quantity_confirmed",
-                            "configuration_complete",
-                            "delivery_commune",
-                            "delivery_address",
-                            "recipient_confirmed",
-                        ],
+                        "allOf": ["product_identified", "order_confirmation"],
                         "anyOf": [],
                     },
                 },
