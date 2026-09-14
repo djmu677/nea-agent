@@ -59,6 +59,35 @@ QUOTE_TERMS = (
     "incluido el envio",
 )
 SHIPPING_TERMS = ("envio", "despacho", "entrega")
+PURCHASE_INTENT_TERMS = (
+    "quiero pedir",
+    "quiero comprar",
+    "quiero encargar",
+    "quiero hacer el pedido",
+    "quiero hacer un pedido",
+    "me gustaria pedir",
+    "me gustaria comprar",
+    "me gustaria encargar",
+    "me gustaria hacer el pedido",
+    "me gustaria hacer un pedido",
+    "hagamos el pedido",
+    "vamos a hacer el pedido",
+    "confirmo el pedido",
+    "confirmamos el pedido",
+    "procedamos con el pedido",
+    "quiero proceder con el pedido",
+)
+PURCHASE_INTENT_NEGATIONS = (
+    "no quiero",
+    "no voy a",
+    "no he dicho que",
+    "solo estoy preguntando",
+    "solo estoy cotizando",
+    "todavia no",
+    "aun no",
+    "si quisiera",
+    "supongamos",
+)
 QUOTE_AFFECTING_FIELDS = frozenset(
     {
         "product",
@@ -117,6 +146,14 @@ def _asks_for_quote(messages: list[dict[str, Any]]) -> bool:
         for text in recent
     )
     return len(current.split()) <= 8 and prior_shipping_quote
+
+
+def _has_explicit_purchase_intent(text: str) -> bool:
+    """Reconoce una decisión de compra, pero no hipótesis ni negaciones."""
+    canonical = _canonical_text(text)
+    if any(term in canonical for term in PURCHASE_INTENT_NEGATIONS):
+        return False
+    return any(term in canonical for term in PURCHASE_INTENT_TERMS)
 
 
 def _agent_tz(settings: Any) -> ZoneInfo:
@@ -313,6 +350,7 @@ async def run_turn(
     # UNA línea cálida en este turno y después calla (gate 1.5). El conteo es
     # determinista aquí; el LLM solo pone la redacción.
     del_lead = [m.content for m in recientes if m.role == "user"]
+    explicit_purchase_intent = _has_explicit_purchase_intent(user_text)
     cerrar_sin_rumbo = (
         settings.stall_enabled
         and streak < 3
@@ -333,6 +371,19 @@ async def run_turn(
         last["content"] = [{"type": "text", "text": str(last["content"])}] + [
             {"type": "image_url", "image_url": {"url": uri}} for uri in image_uris
         ]
+    if explicit_purchase_intent:
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "El cliente acaba de manifestar inequívocamente que desea "
+                    "comprar o hacer el pedido. Guarda order_confirmation=true "
+                    "y solicita el avance a Pedido ahora. Los detalles que falten "
+                    "se completan después, una pregunta útil por turno; no repitas "
+                    "confirmaciones ya entregadas ni hagas handoff solo por faltar datos."
+                ),
+            }
+        )
 
     # --- LLM con tools ----------------------------------------------------
     runtime = ToolRuntime(
@@ -358,6 +409,16 @@ async def run_turn(
             conv.id, phase="cerrada", followup_due_at=None
         )
         return
+
+    # Respaldo determinista del pipeline: el modelo redacta y extrae datos,
+    # pero no tiene la última palabra sobre si recuerda mover la tarjeta.
+    # Cuatro intervenciones llevan a En conversación. Una intención explícita
+    # lleva a Pedido por pasos consecutivos, aunque falten detalles operativos.
+    if runtime.handoff_reason is None:
+        await runtime.ensure_pipeline_progress(
+            customer_turns=len(del_lead),
+            explicit_purchase_intent=explicit_purchase_intent,
+        )
 
     # Backstop determinista: al tercer strike el handoff SUCEDE, lo haya
     # llamado el modelo o no (la regla de negocio no depende de su humor).
