@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+import json
 
 from app.crm import AgendaUnavailable, CrmClient
 from app.state import OfferedSlot
@@ -295,7 +296,7 @@ async def test_reprogramar_exige_confirmacion_y_la_envia_al_crm(
         {"start_utc": SLOT_ISO, "dia_confirmado": "sí, ese horario"},
     )
     assert result["ok"] is True
-    body = route.calls[0].request.json()
+    body = json.loads(route.calls[0].request.content)
     assert body["clientAuthorization"] == "sí, ese horario"
 
 
@@ -329,7 +330,7 @@ async def test_cancelar_solo_registra_solicitud_y_deja_handoff(runtime_y_ctx, re
     assert result["ok"] is True
     assert result["pendiente_aprobacion_humana"] is True
     assert runtime.handoff_reason == "modelo"
-    assert route.calls[0].request.json()["action"] == "cancel_request"
+    assert json.loads(route.calls[0].request.content)["action"] == "cancel_request"
 
 
 async def test_cancelar_rechaza_texto_inventado(runtime_y_ctx, respx_mock):
@@ -364,7 +365,7 @@ async def test_recordatorio_requiere_permiso_explicito(runtime_y_ctx, respx_mock
         {"client_authorization": "sí, avísame antes"},
     )
     assert result["ok"] is True
-    assert route.calls[0].request.json()["action"] == "authorize_reminder"
+    assert json.loads(route.calls[0].request.content)["action"] == "authorize_reminder"
 
 
 async def test_recordatorio_no_se_activa_sin_permiso(runtime_y_ctx, respx_mock):

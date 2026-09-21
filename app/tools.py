@@ -123,6 +123,7 @@ def _confirmed_booking_choice(
     quoted_confirmation: str,
     previous_assistant_text: str,
     slot_label: str,
+    question_cues: tuple[str, ...] = _CONFIRMATION_QUESTION_CUES,
 ) -> bool:
     """La reserva requiere evidencia textual del sí sobre ESE día y hora.
 
@@ -149,7 +150,7 @@ def _confirmed_booking_choice(
         return False
     if day_part not in previous or time_match.group(0) not in previous:
         return False
-    return any(cue in previous for cue in _CONFIRMATION_QUESTION_CUES)
+    return any(cue in previous for cue in question_cues)
 
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -1206,6 +1207,8 @@ class ToolRuntime:
             quoted_confirmation=authorization,
             previous_assistant_text=self._previous_assistant_text,
             slot_label=chosen.label,
+            question_cues=_CONFIRMATION_QUESTION_CUES
+            + ("te muevo", "te cambio", "te reprogramo"),
         ):
             return {
                 "ok": False,
