@@ -337,6 +337,10 @@ async def run_turn(
     # el hilo COMPLETO del lead, no solo la ventana de contexto.
     recientes = await ctx.store.recent_messages(conv.id, STALL_LOOKBACK)
     history = recientes[-settings.history_window :]
+    previous_assistant_text = next(
+        (m.content for m in reversed(history) if m.role == "assistant"),
+        "",
+    )
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}] + [
         {"role": m.role, "content": m.content} for m in history
     ]
@@ -393,6 +397,7 @@ async def run_turn(
         profile=profile,
         context=context,
         user_text=user_text,
+        previous_assistant_text=previous_assistant_text,
     )
     try:
         final_text = await _tool_loop(
