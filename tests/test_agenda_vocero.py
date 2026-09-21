@@ -36,7 +36,13 @@ async def runtime_y_ctx():
             )
         ],
     )
-    yield ToolRuntime(ctx, conv, CRM_CONV_ID), ctx, conv
+    yield ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        user_text="sí, ese horario",
+        previous_assistant_text="¿Te aparto el lunes 20 de julio, 10:00 am?",
+    ), ctx, conv
     await ctx.crm.aclose()
 
 
@@ -90,7 +96,7 @@ async def test_slot_no_ofrecido_resincroniza_con_lo_que_dice_el_crm(
         )
     )
     result = await runtime.execute(
-        "book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "el lunes"}
+        "book_session", {"start_utc": SLOT_ISO, "dia_confirmado": "sí, ese horario"}
     )
     assert result["ok"] is False
     assert result["error"] == "slot_no_ofrecido"
@@ -113,7 +119,10 @@ async def test_slot_no_ofrecido_sin_alternativas_manda_a_re_ofrecer(
             409, json={"error": {"code": "slot_not_offered"}, "slots": []}
         )
     )
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute(
+        "book_session",
+        {"start_utc": SLOT_ISO, "dia_confirmado": "sí, ese horario"},
+    )
     assert result["ok"] is False
     assert "propose_slots" in result["detalle"]
     assert await ctx.store.get_offered_slots(conv.id) == []
