@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+import json
 
 from app.crm import AgendaUnavailable, CrmClient
 from app.state import OfferedSlot
@@ -271,3 +272,111 @@ async def test_availability_404_es_agenda_apagada_no_error_generico(respx_mock):
             await crm.get_availability(CRM_CONV_ID)
     finally:
         await crm.aclose()
+
+
+async def test_reprogramar_exige_confirmacion_y_la_envia_al_crm(
+    runtime_y_ctx, respx_mock
+):
+    runtime, _ctx, _conv = runtime_y_ctx
+    runtime._user_text = "sí, ese horario"
+    runtime._previous_assistant_text = "¿Te muevo al lunes 20 de julio, 10:00 am?"
+    route = respx_mock.patch(f"{CRM_URL}/api/bot/bookings").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "bookingId": "bk_1",
+                "meetingLink": "https://meet.google.com/x",
+                "linkPending": False,
+                "label": "lunes 20 de julio, 10:00 am",
+            },
+        )
+    )
+    result = await runtime.execute(
+        "reschedule_session",
+        {"start_utc": SLOT_ISO, "dia_confirmado": "sí, ese horario"},
+    )
+    assert result["ok"] is True
+    body = json.loads(route.calls[0].request.content)
+    assert body["clientAuthorization"] == "sí, ese horario"
+
+
+async def test_reprogramar_rechaza_confirmacion_inventada(runtime_y_ctx, respx_mock):
+    runtime, _ctx, _conv = runtime_y_ctx
+    runtime._user_text = "mejor lo veo después"
+    runtime._previous_assistant_text = "¿Te muevo al lunes 20 de julio, 10:00 am?"
+    route = respx_mock.patch(f"{CRM_URL}/api/bot/bookings").mock(
+        return_value=httpx.Response(200, json={"bookingId": "bk_1"})
+    )
+    result = await runtime.execute(
+        "reschedule_session",
+        {"start_utc": SLOT_ISO, "dia_confirmado": "sí, ese horario"},
+    )
+    assert result["error"] == "confirmacion_requerida"
+    assert route.call_count == 0
+
+
+async def test_cancelar_solo_registra_solicitud_y_deja_handoff(runtime_y_ctx, respx_mock):
+    runtime, _ctx, _conv = runtime_y_ctx
+    runtime._user_text = "quiero cancelar la cita"
+    route = respx_mock.post(f"{CRM_URL}/api/bot/bookings/actions").mock(
+        return_value=httpx.Response(
+            200, json={"ok": True, "pendingHumanApproval": True, "bookingId": "bk_1"}
+        )
+    )
+    result = await runtime.execute(
+        "request_cancel_session",
+        {"client_authorization": "quiero cancelar la cita"},
+    )
+    assert result["ok"] is True
+    assert result["pendiente_aprobacion_humana"] is True
+    assert runtime.handoff_reason == "modelo"
+    assert json.loads(route.calls[0].request.content)["action"] == "cancel_request"
+
+
+async def test_cancelar_rechaza_texto_inventado(runtime_y_ctx, respx_mock):
+    runtime, _ctx, _conv = runtime_y_ctx
+    runtime._user_text = "la cita está bien"
+    route = respx_mock.post(f"{CRM_URL}/api/bot/bookings/actions").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+    result = await runtime.execute(
+        "request_cancel_session",
+        {"client_authorization": "quiero cancelar la cita"},
+    )
+    assert result["error"] == "autorizacion_requerida"
+    assert route.call_count == 0
+
+
+async def test_recordatorio_requiere_permiso_explicito(runtime_y_ctx, respx_mock):
+    runtime, _ctx, _conv = runtime_y_ctx
+    runtime._user_text = "sí, avísame antes"
+    route = respx_mock.post(f"{CRM_URL}/api/bot/bookings/actions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "bookingId": "bk_1",
+                "scheduledFor": "2026-07-19T16:00:00.000Z",
+            },
+        )
+    )
+    result = await runtime.execute(
+        "authorize_reminder",
+        {"client_authorization": "sí, avísame antes"},
+    )
+    assert result["ok"] is True
+    assert json.loads(route.calls[0].request.content)["action"] == "authorize_reminder"
+
+
+async def test_recordatorio_no_se_activa_sin_permiso(runtime_y_ctx, respx_mock):
+    runtime, _ctx, _conv = runtime_y_ctx
+    runtime._user_text = "gracias por la cita"
+    route = respx_mock.post(f"{CRM_URL}/api/bot/bookings/actions").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+    result = await runtime.execute(
+        "authorize_reminder",
+        {"client_authorization": "sí, avísame antes"},
+    )
+    assert result["error"] == "autorizacion_requerida"
+    assert route.call_count == 0

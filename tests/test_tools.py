@@ -772,6 +772,8 @@ async def test_propose_slots_etiqueta_con_el_dia_en_palabras(
 async def test_reschedule_mueve_la_cita_sin_handoff(runtime_y_ctx, respx_mock):
     """Antes esto era handoff obligado y el lead se quedaba sin nadie."""
     runtime, ctx, conv = runtime_y_ctx
+    runtime._user_text = "sí, el lunes 20"
+    runtime._previous_assistant_text = "¿Te muevo al lunes 20 de julio, 10:00 am?"
     patch = respx_mock.patch(f"{CRM_URL}/api/bot/bookings").mock(
         return_value=httpx.Response(
             200, json={"bookingId": "bk_1", "zoomJoinUrl": "https://meet.test/1"}
@@ -786,6 +788,7 @@ async def test_reschedule_mueve_la_cita_sin_handoff(runtime_y_ctx, respx_mock):
     assert json.loads(patch.calls[0].request.content) == {
         "conversationId": CRM_CONV_ID,
         "startUtc": SLOT_ISO,
+        "clientAuthorization": "sí, el lunes 20",
     }
     assert await ctx.store.get_offered_slots(conv.id) == []
 
@@ -805,13 +808,16 @@ async def test_reschedule_rechaza_slot_no_ofrecido(runtime_y_ctx, respx_mock):
 
 async def test_reschedule_sin_cita_manda_a_book(runtime_y_ctx, respx_mock):
     runtime, ctx, conv = runtime_y_ctx
+    runtime._user_text = "sí, el lunes 20"
+    runtime._previous_assistant_text = "¿Te muevo al lunes 20 de julio, 10:00 am?"
     respx_mock.patch(f"{CRM_URL}/api/bot/bookings").mock(
         return_value=httpx.Response(
             404, json={"error": {"code": "no_booking", "message": "sin cita"}}
         )
     )
     result = await runtime.execute(
-        "reschedule_session", {"start_utc": SLOT_ISO, "dia_confirmado": "el lunes"}
+        "reschedule_session",
+        {"start_utc": SLOT_ISO, "dia_confirmado": "sí, el lunes 20"},
     )
     assert result["ok"] is False
     assert result["error"] == "sin_cita"

@@ -344,7 +344,10 @@ class CrmClient:
         return data
 
     async def reschedule_booking(
-        self, conversation_id: str, start_utc: str
+        self,
+        conversation_id: str,
+        start_utc: str,
+        client_authorization: str,
     ) -> dict[str, Any]:
         """Mueve la PRÓXIMA cita activa del lead a otro horario ofrecido.
 
@@ -354,7 +357,11 @@ class CrmClient:
         resp = await self._request(
             "PATCH",
             "/api/bot/bookings",
-            json={"conversationId": conversation_id, "startUtc": start_utc},
+            json={
+                "conversationId": conversation_id,
+                "startUtc": start_utc,
+                "clientAuthorization": client_authorization,
+            },
         )
         if resp.status_code == 409:
             raise _booking_conflict(resp)
@@ -367,6 +374,56 @@ class CrmClient:
             raise AgendaUnavailable("este CRM no tiene el motor de agenda encendido")
         if resp.status_code != 200:
             raise CrmError(f"reschedule devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def request_booking_cancellation(
+        self, conversation_id: str, client_authorization: str
+    ) -> dict[str, Any]:
+        """Registra una solicitud; Parley NO cancela sin aprobación humana."""
+        resp = await self._request(
+            "POST",
+            "/api/bot/bookings/actions",
+            json={
+                "action": "cancel_request",
+                "conversationId": conversation_id,
+                "clientAuthorization": client_authorization,
+            },
+        )
+        if resp.status_code == 409:
+            raise CrmConflict(_conflict_code(resp), _payload(resp))
+        if resp.status_code == 404:
+            if _payload(resp):
+                raise CrmConflict("no_booking", _payload(resp))
+            raise AgendaUnavailable("este CRM no tiene el motor de agenda encendido")
+        if resp.status_code != 200:
+            raise CrmError(f"cancel_request devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def authorize_booking_reminder(
+        self, conversation_id: str, client_authorization: str
+    ) -> dict[str, Any]:
+        """Autoriza el recordatorio durable del CRM; el envío ocurre allá."""
+        resp = await self._request(
+            "POST",
+            "/api/bot/bookings/actions",
+            json={
+                "action": "authorize_reminder",
+                "conversationId": conversation_id,
+                "clientAuthorization": client_authorization,
+            },
+        )
+        if resp.status_code == 409:
+            raise CrmConflict(_conflict_code(resp), _payload(resp))
+        if resp.status_code == 404:
+            if _payload(resp):
+                raise CrmConflict("no_booking", _payload(resp))
+            raise AgendaUnavailable("este CRM no tiene el motor de agenda encendido")
+        if resp.status_code == 422:
+            raise CrmConflict("reminder_unavailable", _payload(resp))
+        if resp.status_code != 200:
+            raise CrmError(f"authorize_reminder devolvió {resp.status_code}")
         data: dict[str, Any] = resp.json()
         return data
 
