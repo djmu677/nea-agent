@@ -99,6 +99,24 @@ def _confirmation_text(value: str) -> str:
     return " ".join(plain.split())
 
 
+_CANCEL_INTENT = ("cancel", "anul", "suspende", "quita la cita", "no podre ir", "no voy a poder ir")
+_REMINDER_INTENT = ("recuerd", "recordatorio", "avisame", "avísame", "notificame", "notifícame")
+
+
+def _current_message_authorizes_action(
+    *,
+    user_text: str,
+    quoted_authorization: str,
+    intent_markers: tuple[str, ...],
+) -> bool:
+    """La herramienta solo puede usar palabras que el cliente escribió ahora."""
+    user = _confirmation_text(user_text)
+    quoted = _confirmation_text(quoted_authorization)
+    if not quoted or quoted not in user:
+        return False
+    return any(marker in user for marker in intent_markers)
+
+
 def _confirmed_booking_choice(
     *,
     user_text: str,
@@ -336,6 +354,49 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "request_cancel_session",
+            "description": (
+                "Registra que el cliente quiere cancelar su cita. NO cancela: "
+                "la deja pendiente para aprobación humana y pausa la IA después "
+                "de avisar al cliente. Usa client_authorization con palabras "
+                "textuales del mensaje actual del cliente."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_authorization": {
+                        "type": "string",
+                        "description": "Fragmento textual del mensaje actual donde pide cancelar",
+                    }
+                },
+                "required": ["client_authorization"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "authorize_reminder",
+            "description": (
+                "Autoriza un recordatorio de la próxima cita por WhatsApp. "
+                "Llámala solo si el cliente lo pidió o aceptó explícitamente en "
+                "su mensaje actual; client_authorization debe citar ese texto."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_authorization": {
+                        "type": "string",
+                        "description": "Fragmento textual del mensaje actual donde autoriza el recordatorio",
+                    }
+                },
+                "required": ["client_authorization"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "route_out",
             "description": (
                 "Marca al lead como no calificado (hoy). Después despídete con "
@@ -370,7 +431,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 # Herramientas que solo tienen sentido si el CRM agenda.
 AGENDA_TOOLS = frozenset(
-    {"propose_slots", "book_session", "book_delivery", "reschedule_session"}
+    {
+        "propose_slots",
+        "book_session",
+        "book_delivery",
+        "reschedule_session",
+        "request_cancel_session",
+        "authorize_reminder",
+    }
 )
 MEDIA_TOOLS = frozenset({"send_media"})
 QUOTE_TOOLS = frozenset({"quote_order"})
@@ -649,6 +717,10 @@ class ToolRuntime:
                 return await self._book_session(args, kind="delivery")
             if name == "reschedule_session":
                 return await self._reschedule_session(args)
+            if name == "request_cancel_session":
+                return await self._request_cancel_session(args)
+            if name == "authorize_reminder":
+                return await self._authorize_reminder(args)
             if name == "route_out":
                 return await self._route_out()
             if name == "handoff":
@@ -1128,9 +1200,26 @@ class ToolRuntime:
         chosen, error = await self._resolve_offered(args, "reschedule_session")
         if error is not None or chosen is None:
             return error or {"ok": False, "error": "slot_no_ofrecido"}
+        authorization = str(args.get("dia_confirmado") or "")
+        if not _confirmed_booking_choice(
+            user_text=self._user_text,
+            quoted_confirmation=authorization,
+            previous_assistant_text=self._previous_assistant_text,
+            slot_label=chosen.label,
+        ):
+            return {
+                "ok": False,
+                "error": "confirmacion_requerida",
+                "detalle": (
+                    "no muevas todavía: el cliente debe confirmar explícitamente "
+                    "el nuevo día y hora preguntados en el mensaje anterior"
+                ),
+            }
         try:
             result = await self._ctx.crm.reschedule_booking(
-                self._crm_conv_id, _iso_z(chosen.start_utc)
+                self._crm_conv_id,
+                _iso_z(chosen.start_utc),
+                authorization,
             )
         except SlotTaken as exc:
             fresh = _slots_from_payload(self._conv.id, exc.slots)
@@ -1165,6 +1254,92 @@ class ToolRuntime:
                 "cual dice label; el link de la videollamada sigue siendo el "
                 "mismo salvo que aquí venga otro"
             ),
+        }
+
+    async def _request_cancel_session(self, args: dict[str, Any]) -> dict[str, Any]:
+        authorization = str(args.get("client_authorization") or "")
+        if not _current_message_authorizes_action(
+            user_text=self._user_text,
+            quoted_authorization=authorization,
+            intent_markers=_CANCEL_INTENT,
+        ):
+            return {
+                "ok": False,
+                "error": "autorizacion_requerida",
+                "detalle": (
+                    "no registres la cancelación todavía: el cliente debe pedirla "
+                    "explícitamente en su mensaje actual"
+                ),
+            }
+        try:
+            result = await self._ctx.crm.request_booking_cancellation(
+                self._crm_conv_id, authorization
+            )
+        except AgendaUnavailable:
+            return self._sin_agenda()
+        except CrmConflict as exc:
+            if exc.code == "no_booking":
+                return {
+                    "ok": False,
+                    "error": "sin_cita",
+                    "detalle": "no hay una cita activa que enviar a aprobación",
+                }
+            raise
+        # La acción destructiva queda pendiente; una persona debe decidirla.
+        self.handoff_reason = "modelo"
+        return {
+            "ok": True,
+            "pendiente_aprobacion_humana": bool(
+                result.get("pendingHumanApproval", True)
+            ),
+            "instrucciones": (
+                "di que la solicitud quedó registrada y que el equipo confirmará "
+                "la cancelación; no digas que la cita ya está cancelada"
+            ),
+        }
+
+    async def _authorize_reminder(self, args: dict[str, Any]) -> dict[str, Any]:
+        authorization = str(args.get("client_authorization") or "")
+        if not _current_message_authorizes_action(
+            user_text=self._user_text,
+            quoted_authorization=authorization,
+            intent_markers=_REMINDER_INTENT,
+        ):
+            return {
+                "ok": False,
+                "error": "autorizacion_requerida",
+                "detalle": (
+                    "no actives el recordatorio: el cliente debe pedirlo o "
+                    "aceptarlo explícitamente en su mensaje actual"
+                ),
+            }
+        try:
+            result = await self._ctx.crm.authorize_booking_reminder(
+                self._crm_conv_id, authorization
+            )
+        except AgendaUnavailable:
+            return self._sin_agenda()
+        except CrmConflict as exc:
+            if exc.code == "no_booking":
+                return {
+                    "ok": False,
+                    "error": "sin_cita",
+                    "detalle": "no hay una cita activa que recordar",
+                }
+            if exc.code == "reminder_unavailable":
+                return {
+                    "ok": False,
+                    "error": "recordatorio_no_disponible",
+                    "detalle": (
+                        "el negocio aún no tiene una plantilla de recordatorio "
+                        "aprobada; no prometas que se enviará"
+                    ),
+                }
+            raise
+        return {
+            "ok": True,
+            "scheduled_for": result.get("scheduledFor"),
+            "instrucciones": "confirma brevemente que el recordatorio quedó autorizado",
         }
 
     async def _route_out(self) -> dict[str, Any]:
