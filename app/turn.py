@@ -338,7 +338,7 @@ async def run_turn(
     recientes = await ctx.store.recent_messages(conv.id, STALL_LOOKBACK)
     history = recientes[-settings.history_window :]
     previous_assistant_text = next(
-        (m.content for m in reversed(history) if m.role == "assistant"),
+        (m.content for m in reversed(recientes) if m.role == "assistant"),
         "",
     )
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}] + [
