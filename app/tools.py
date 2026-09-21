@@ -14,6 +14,8 @@ nunca tumba el turno.
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -63,6 +65,74 @@ MAX_OFFERED = 12
 # Reparto pedido al CRM: hasta 3 huecos por día, en 5 días distintos.
 OFFER_PER_DAY = 3
 OFFER_DAYS = 5
+
+_CONFIRMATION_WORDS = re.compile(
+    r"\b(si|vale|ok|okay|dale|va|perfecto|confirmo|ese|esa)\b"
+)
+_CONFIRMATION_PHRASES = (
+    "me sirve",
+    "de acuerdo",
+    "agendalo",
+    "apartalo",
+    "reservalo",
+)
+_CONFIRMATION_QUESTION_CUES = (
+    "te aparto",
+    "te agendo",
+    "te reservo",
+    "quieres que te aparte",
+    "quieres que te agende",
+    "quieres que te reserve",
+    "confirmamos",
+    "reservamos",
+    "agendamos",
+    "apartamos",
+)
+
+
+def _confirmation_text(value: str) -> str:
+    plain = "".join(
+        char
+        for char in unicodedata.normalize("NFD", value.casefold())
+        if unicodedata.category(char) != "Mn"
+    )
+    return " ".join(plain.split())
+
+
+def _confirmed_booking_choice(
+    *,
+    user_text: str,
+    quoted_confirmation: str,
+    previous_assistant_text: str,
+    slot_label: str,
+) -> bool:
+    """La reserva requiere evidencia textual del sí sobre ESE día y hora.
+
+    El modelo no puede autorizarse a sí mismo: la frase citada debe existir en
+    el mensaje actual del cliente y el turno anterior debe haber pedido
+    confirmación sobre el slot exacto.
+    """
+    user = _confirmation_text(user_text)
+    quoted = _confirmation_text(quoted_confirmation)
+    previous = _confirmation_text(previous_assistant_text)
+    label = _confirmation_text(slot_label)
+
+    if not quoted or quoted not in user:
+        return False
+    if not (
+        _CONFIRMATION_WORDS.search(quoted)
+        or any(phrase in quoted for phrase in _CONFIRMATION_PHRASES)
+    ):
+        return False
+
+    day_part = label.rsplit(",", 1)[0].strip()
+    time_match = re.search(r"\b\d{1,2}:\d{2}\b", label)
+    if not day_part or time_match is None:
+        return False
+    if day_part not in previous or time_match.group(0) not in previous:
+        return False
+    return any(cue in previous for cue in _CONFIRMATION_QUESTION_CUES)
+
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -526,6 +596,7 @@ class ToolRuntime:
         profile: BusinessProfile | None = None,
         context: dict[str, Any] | None = None,
         user_text: str = "",
+        previous_assistant_text: str = "",
     ) -> None:
         self._ctx = ctx
         self._conv = conv
@@ -533,6 +604,7 @@ class ToolRuntime:
         self._profile = profile or BusinessProfile()
         self._context = context or {}
         self._user_text = user_text
+        self._previous_assistant_text = previous_assistant_text
         # Efectos observables por turn.py:
         self.handoff_reason: str | None = None  # se ejecuta DESPUÉS de la despedida
         self.booked = False
@@ -991,6 +1063,20 @@ class ToolRuntime:
         chosen, error = await self._resolve_offered(args, "book_session")
         if error is not None or chosen is None:
             return error or {"ok": False, "error": "slot_no_ofrecido"}
+        if not _confirmed_booking_choice(
+            user_text=self._user_text,
+            quoted_confirmation=str(args.get("dia_confirmado") or ""),
+            previous_assistant_text=self._previous_assistant_text,
+            slot_label=chosen.label,
+        ):
+            return {
+                "ok": False,
+                "error": "confirmacion_requerida",
+                "detalle": (
+                    "no reserves todavía: el cliente debe confirmar explícitamente "
+                    "el día y la hora que le preguntaste en el mensaje anterior"
+                ),
+            }
         try:
             result = await self._ctx.crm.create_booking(
                 self._crm_conv_id, _iso_z(chosen.start_utc), kind=kind

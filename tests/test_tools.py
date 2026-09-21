@@ -31,7 +31,13 @@ async def runtime_y_ctx():
             )
         ],
     )
-    runtime = ToolRuntime(ctx, conv, CRM_CONV_ID)
+    runtime = ToolRuntime(
+        ctx,
+        conv,
+        CRM_CONV_ID,
+        user_text="sí, ese horario",
+        previous_assistant_text="¿Te aparto el lunes 20 de julio, 10:00 am?",
+    )
     yield runtime, ctx, conv
     await ctx.crm.aclose()
 
@@ -69,7 +75,11 @@ async def test_book_acepta_slot_ofrecido_epoch_exacto(runtime_y_ctx, respx_mock)
     )
     # mismo instante escrito con offset en vez de Z — el epoch es lo que cuenta
     result = await runtime.execute(
-        "book_session", {"start_utc": "2026-07-20T16:00:00+00:00"}
+        "book_session",
+        {
+            "start_utc": "2026-07-20T16:00:00+00:00",
+            "dia_confirmado": "sí, ese horario",
+        },
     )
     assert result["ok"] is True
     assert runtime.booked is True
@@ -77,6 +87,49 @@ async def test_book_acepta_slot_ofrecido_epoch_exacto(runtime_y_ctx, respx_mock)
     assert body == {"conversationId": CRM_CONV_ID, "startUtc": SLOT_ISO}
     # al reservar se limpian los ofrecidos
     assert await ctx.store.get_offered_slots(conv.id) == []
+
+
+async def test_book_rechaza_confirmacion_inventada_por_el_modelo(
+    runtime_y_ctx, respx_mock
+):
+    runtime, ctx, conv = runtime_y_ctx
+    runtime._user_text = "quiero pensarlo un poco"
+    bookings = respx_mock.post(f"{CRM_URL}/api/bot/bookings").mock(
+        return_value=httpx.Response(201, json={"bookingId": "bk_1"})
+    )
+
+    result = await runtime.execute(
+        "book_session",
+        {"start_utc": SLOT_ISO, "dia_confirmado": "sí, ese horario"},
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "confirmacion_requerida"
+    assert bookings.call_count == 0
+    assert await ctx.store.get_offered_slots(conv.id)
+
+
+async def test_book_rechaza_si_no_hubo_pregunta_especifica_del_slot(
+    runtime_y_ctx, respx_mock
+):
+    runtime, ctx, conv = runtime_y_ctx
+    runtime._previous_assistant_text = (
+        "Tengo estos horarios: lunes 20 de julio, 10:00 am; "
+        "martes 21 de julio, 10:00 am. ¿Cuál te sirve?"
+    )
+    bookings = respx_mock.post(f"{CRM_URL}/api/bot/bookings").mock(
+        return_value=httpx.Response(201, json={"bookingId": "bk_1"})
+    )
+
+    result = await runtime.execute(
+        "book_session",
+        {"start_utc": SLOT_ISO, "dia_confirmado": "sí, ese horario"},
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "confirmacion_requerida"
+    assert bookings.call_count == 0
+    assert await ctx.store.get_offered_slots(conv.id)
 
 
 async def test_book_slot_taken_ofrece_alternativas_frescas(runtime_y_ctx, respx_mock):
@@ -97,7 +150,10 @@ async def test_book_slot_taken_ofrece_alternativas_frescas(runtime_y_ctx, respx_
             },
         )
     )
-    result = await runtime.execute("book_session", {"start_utc": SLOT_ISO})
+    result = await runtime.execute(
+        "book_session",
+        {"start_utc": SLOT_ISO, "dia_confirmado": "sí, ese horario"},
+    )
     assert result["ok"] is False
     assert result["error"] == "slot_taken"
     assert [s["label"] for s in result["slots"]] == [s["label"] for s in frescos]
