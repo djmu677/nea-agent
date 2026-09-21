@@ -140,7 +140,7 @@ echo "C1=$C1"
 echo "C2=$C2"
 
 echo "===== E2E NEA -> PARLEY ====="
-timeout 6m docker run --rm   --network host   -e PYTHONDONTWRITEBYTECODE=1   -e CRM_BASE_URL="$APP_BASE_URL"   -e CRM_BOT_API_KEY="$BOT_API_KEY"   -e A04_CONVERSATION_1="$C1"   -e A04_CONVERSATION_2="$C2"   -v "$NEA:/work:ro"   -w /work   python:3.11-slim   sh -lc 'pip install --disable-pip-version-check -q -r requirements-dev.txt && python selftest/a04_agenda.py'
+timeout 6m docker run --rm   --network host   -e PYTHONDONTWRITEBYTECODE=1   -e CRM_BASE_URL="$APP_BASE_URL"   -e CRM_BOT_API_KEY="$BOT_API_KEY"   -e A04_CONVERSATION_1="$C1"   -e A04_CONVERSATION_2="$C2"   -v "$NEA:/work:ro"   -w /work   python:3.11-slim   sh -lc 'pip install --disable-pip-version-check -q -r requirements-dev.txt && PYTHONPATH=/work python selftest/a04_agenda.py'
 
 echo "===== A04 FINAL ====="
 echo "E2E=OK"
