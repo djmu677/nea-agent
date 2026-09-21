@@ -120,7 +120,7 @@ async def main() -> None:
             conflict,
         )
 
-        print("\n===== A04 E2E: 7/7 checks OK =====")
+        print("\n===== A04 E2E: 8/8 checks OK =====")
     finally:
         await crm.aclose()
 
