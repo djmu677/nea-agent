@@ -100,6 +100,10 @@ async def test_entrega_reserva_el_slot_con_tipo_delivery(respx_mock) -> None:
                 {"name": "Pedido", "botStageKey": "order"},
             ],
         },
+        user_text="Sí, el sábado 19 a las 12",
+        previous_assistant_text=(
+            "¿Te reservo el sábado 19 de septiembre, 12:00?"
+        ),
     )
     result = await runtime.execute(
         "book_delivery",
